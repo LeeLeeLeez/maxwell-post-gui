@@ -17,7 +17,8 @@
 
 ## 📸 界面
 
-![Uploading image.png…]()
+<img width="1082" height="832" alt="image" src="https://github.com/user-attachments/assets/7766e0a1-cf04-49c8-b4a4-85b97b3a51bf" />
+
 
 
 九个功能页：
