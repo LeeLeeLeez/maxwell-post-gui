@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" font-family="Microsoft YaHei, Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="1280" height="720" fill="#F5F7FA"/>
+
+  <!-- title bar -->
+  <rect x="0" y="0" width="1280" height="56" fill="#FFFFFF"/>
+  <line x1="0" y1="55.5" x2="1280" y2="55.5" stroke="#E2E8F0"/>
+  <rect x="18" y="12" width="32" height="32" rx="8" fill="#2563EB"/>
+  <text x="34" y="35" font-size="18" font-weight="bold" fill="#FFFFFF" text-anchor="middle">M</text>
+  <text x="64" y="35" font-size="20" font-weight="bold" fill="#1E293B">Maxwell 绕组后处理工具</text>
+  <text x="300" y="34" font-size="14" fill="#64748B">v2026.09  ·  gRPC 50051</text>
+
+  <!-- tabs -->
+  <g font-size="15">
+    <rect x="18" y="78" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="103" fill="#64748B">Ohmic Loss 积分</text>
+
+    <rect x="18" y="124" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="149" fill="#64748B">损耗柱状图</text>
+
+    <rect x="18" y="170" width="176" height="40" rx="8" fill="#2563EB"/>
+    <text x="32" y="195" fill="#FFFFFF">电流积分</text>
+
+    <rect x="18" y="216" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="241" fill="#64748B">剖面 / Sheets</text>
+
+    <rect x="18" y="262" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="287" fill="#64748B">场计算器变量</text>
+
+    <rect x="18" y="308" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="333" fill="#64748B">体积排序 / 匹配</text>
+
+    <rect x="18" y="354" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="379" fill="#64748B">电流密度场图</text>
+
+    <rect x="18" y="400" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="425" fill="#64748B">温度赋值</text>
+
+    <rect x="18" y="446" width="176" height="40" rx="8" fill="#FFFFFF"/>
+    <text x="32" y="471" fill="#64748B">matrix等效</text>
+  </g>
+
+  <!-- header card -->
+  <rect x="214" y="78" width="1048" height="122" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="230" y="110" font-size="20" font-weight="bold" fill="#1E293B">电流积分</text>
+  <text x="230" y="140" font-size="14" fill="#64748B">① 剖面 (Non-model)  →  ② 场计算器电流积分  →  ③ Maxwell 报表 (X = Phase)</text>
+  <rect x="230" y="158" width="140" height="30" rx="6" fill="#2563EB"/>
+  <text x="300" y="178" font-size="14" fill="#FFFFFF" text-anchor="middle">一条龙执行</text>
+  <rect x="386" y="158" width="100" height="30" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="436" y="178" font-size="14" fill="#64748B" text-anchor="middle">仅补报表</text>
+  <text x="520" y="178" font-size="13" fill="#94A3B8">坐标系列表 · 剖面平面 ZX · 相位 0~360° · 结果写回 Maxwell</text>
+
+  <!-- entity list -->
+  <rect x="214" y="212" width="430" height="448" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="230" y="240" font-size="16" font-weight="bold" fill="#1E293B">候选实体（copper）</text>
+  <g font-family="Consolas, Menlo, monospace" font-size="13">
+    <rect x="224" y="254" width="404" height="26" rx="5" fill="#DBEAFE"/>
+    <text x="234" y="272" fill="#1E293B">Sec_74   21.19 mm³</text>
+    <rect x="224" y="284" width="404" height="26" rx="5" fill="#DBEAFE"/>
+    <text x="234" y="302" fill="#1E293B">Sec_16   21.19 mm³</text>
+    <text x="234" y="332" fill="#64748B">Sec_73   14.13 mm³</text>
+    <text x="234" y="362" fill="#64748B">Sec_22   14.13 mm³</text>
+    <text x="234" y="392" fill="#64748B">Sec_77   21.19 mm³</text>
+    <text x="234" y="422" fill="#64748B">Sec_78   14.13 mm³</text>
+    <text x="234" y="452" fill="#64748B">Sec_79   21.19 mm³</text>
+    <text x="234" y="482" fill="#64748B">Sec_81   14.13 mm³</text>
+  </g>
+  <text x="230" y="640" font-size="12" fill="#94A3B8">已选 2 / 8  ·  双击加入堆栈  ·  支持通配过滤 Sec_7*</text>
+
+  <!-- log -->
+  <rect x="660" y="212" width="602" height="448" rx="10" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="676" y="240" font-size="16" font-weight="bold" fill="#1E293B">日志</text>
+  <g font-family="Consolas, Menlo, monospace" font-size="13" fill="#64748B">
+    <text x="676" y="274">[10:21:03] 连接 AEDT … OK</text>
+    <text x="676" y="302">[10:21:04] 当前设计: termination_edit</text>
+    <text x="676" y="330">[10:21:05] 剖面 ZX → Sec_74_Sec (Non-model)</text>
+    <text x="676" y="358">[10:21:09] 场计算器: Integrate(Surface(..), AtPhase(..))</text>
+    <text x="676" y="386">[10:21:12] 报表 I_Sec_74 已创建 (X = Phase)</text>
+    <text x="676" y="414">[10:21:13] 完成 ✅  8/8</text>
+  </g>
+  <text x="676" y="640" font-size="12" fill="#94A3B8">所有几何操作一律 Non-model，不会清空 &lt;proj&gt;.aedtresults/&lt;design&gt;.results/</text>
+
+  <!-- status bar -->
+  <line x1="0" y1="675.5" x2="1280" y2="675.5" stroke="#E2E8F0"/>
+  <rect x="0" y="676" width="1280" height="44" fill="#FFFFFF"/>
+  <text x="18" y="703" font-size="13" fill="#64748B">就绪   ·   只操作当前激活设计   ·   保存前后比对结果目录指纹，异常拒绝保存</text>
+</svg>

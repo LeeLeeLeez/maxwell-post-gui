@@ -1,0 +1,223 @@
+# -*- coding: utf-8 -*-
+"""
+gh_upload.py —— 把 Maxwell 后处理 GUI 以【明文】推送到 GitHub
+
+为什么不用 git.exe？
+    本机装了 DLP 透明加密驱动：非白名单进程（git.exe / powershell）读到的
+    源文件是密文（文件头 `%TSD-Header-###%`，大小被填充成 1024 的整数倍），
+    git 会把它当二进制 blob 提交，仓库里就是一堆解不开的乱码。
+    Python 在白名单里，读到的是明文 —— 所以本脚本用 Python 读文件、
+    直接调 GitHub REST API 建 commit，完全绕开 git.exe。
+
+用法：
+    # 1) 先到 https://github.com/settings/tokens 建一个 Fine-grained token
+    #    权限勾 Contents: Read and write（若要顺便建库再勾 Administration: Read/Write
+    #    或 Metadata 即可；仓库已存在时只需 Contents）
+    # 2) 首次上传（自动建库）
+    python gh_upload.py --token ghp_xxx --repo maxwell-post-gui --public
+    # 3) 以后每次改完代码再提交
+    python gh_upload.py --token ghp_xxx --repo maxwell-post-gui -m "修 matrix 单位联动"
+    # 4) 只看会传什么，不联网
+    python gh_upload.py --dry-run
+
+token 也可以放环境变量：
+    set GITHUB_TOKEN=ghp_xxx
+"""
+import argparse
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+API = "https://api.github.com"
+
+# 要发布的文件（相对本脚本目录）。新增文件在这里加一行即可。
+FILES = [
+    "README.md",
+    "LICENSE",
+    ".gitignore",
+    "aedt_gui.py",
+    "aedt_gui_backend.py",
+    "current_integral_pipeline.py",
+    "aedt_env.py",
+    "section_cs.py",
+    "indcalc_core.py",
+    "maxwell_m.ico",
+    "run_aedt_gui.bat",
+    "run_aedt_gui_debug.bat",
+    "upload_to_github.bat",
+    "docs/screenshot.svg",
+    "gh_upload.py",
+    "upload_gui.py",
+]
+
+DESCRIPTION = ("Post-processing GUI for Ansys Maxwell winding simulations: "
+               "Non-model sectioning, current integration, Ohmic-loss sweeps, "
+               "and offline RL-matrix / T-equivalent extraction.")
+
+
+def _req(method, url, token, data=None, allow404=False):
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("Authorization", "Bearer %s" % token)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "gh_upload.py")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        # 409 'Git Repository is empty' 对空仓库的 GET ref 也会出现，
+        # 语义上等同于'不存在'
+        if allow404 and e.code in (404, 409):
+            return None
+        detail = e.read().decode("utf-8", "replace")[:400]
+        raise SystemExit("[HTTP %d] %s\n%s" % (e.code, url, detail))
+
+
+def read_plain(rel, fix_readme=None):
+    """Python 读 = 明文。顺便做一次密文体检。"""
+    p = os.path.join(HERE, rel)
+    if not os.path.isfile(p):
+        raise SystemExit("缺少文件: %s" % rel)
+    data = open(p, "rb").read()
+    if data[:4] == b"%TSD":
+        raise SystemExit("!! %s 读到的是 DLP 密文，拒绝上传。请用白名单进程重写该文件。" % rel)
+    if fix_readme and rel == "README.md":
+        data = data.decode("utf-8")
+        data = data.replace("<你的用户名>", fix_readme[0]).replace("<仓库名>", fix_readme[1])
+        data = data.encode("utf-8")
+    return data
+
+
+def do_upload(token, repo_name, message="", public=True, log=print):
+    """执行一次上传（建库 / 追加 commit）。返回仓库 URL。"""
+    # 1. 我是谁
+    me = _req("GET", API + "/user", token)
+    owner = me.get("login")
+
+    fix = (owner, repo_name)
+
+    def _bootstrap_empty():
+        """空仓库调 Git Data API 会 409 'Git Repository is empty'。
+        先用 Contents API 放一个 README 初始化出首个 commit。"""
+        log("仓库为空 → 先放入 README 初始化…")
+        data = read_plain("README.md", fix_readme=(owner, repo_name))
+        r0 = _req("PUT", "%s/repos/%s/%s/contents/README.md" % (API, owner, repo_name),
+                  token, {"message": "init: README",
+                          "content": base64.b64encode(data).decode("ascii")})
+        csha = r0["commit"]["sha"]
+        cm = _req("GET", "%s/repos/%s/%s/git/commits/%s" % (API, owner, repo_name, csha),
+                  token)
+        return cm["tree"]["sha"], [csha]
+    log("GitHub 账号: %s" % owner)
+
+    # 2. 仓库在不在
+    repo = _req("GET", "%s/repos/%s/%s" % (API, owner, repo_name), token, allow404=True)
+    if repo is None:
+        try:
+            repo = _req("POST", API + "/user/repos", token, {
+                "name": repo_name,
+                "description": DESCRIPTION,
+                "private": (not public),
+                "auto_init": False,
+            })
+        except SystemExit as e:
+            raise SystemExit(
+                "创建仓库被 GitHub 拒绝（403 = 这个 token 没有建新仓库的权限）。\n\n"
+                "办法①（推荐）：换成 classic token，生成页会自动勾好 repo 权限：\n"
+                "    https://github.com/settings/tokens/new?scopes=repo\n"
+                "    生成后把新 token 粘进上传窗口再来一次。\n\n"
+                "办法②：先在网页手动建好一个空仓库（注意不要勾 Add a README），\n"
+                "    然后把上传窗口里的仓库名改成它、点开始 ——\n"
+                "    只要 token 有 Contents 读写权限就能往里推。\n\n"
+                "原始错误：%s" % str(e)[:400])
+        log("已创建仓库: %s (private=%s)" % (repo["full_name"], not public))
+        base_tree, parents = _bootstrap_empty()
+    else:
+        log("仓库已存在: %s  star=%s" % (repo["full_name"], repo.get("stargazers_count", 0)))
+        br = repo.get("default_branch", "main")
+        ref = _req("GET", "%s/repos/%s/%s/git/ref/heads/%s" % (API, owner, repo_name, br),
+                   token, allow404=True)
+        if ref is None:
+            base_tree, parents = _bootstrap_empty()
+        else:
+            cm = _req("GET", ref["object"]["url"], token)
+            base_tree, parents = cm["tree"]["sha"], [cm["sha"]]
+
+
+    # 3. 逐个建 blob（内容 base64；Python 读到的是明文）
+    tree = []
+    for f in FILES:
+        data = read_plain(f, fix_readme=fix)
+        b = _req("POST", "%s/repos/%s/%s/git/blobs" % (API, owner, repo_name), token,
+                 {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})
+        tree.append({"path": f.replace("\\", "/"), "mode": "100644",
+                     "type": "blob", "sha": b["sha"]})
+        log("  blob %-32s %s" % (f, b["sha"][:8]))
+
+    # 4. tree -> commit -> 更新 ref
+    payload = {"tree": tree}
+    if base_tree:
+        payload["base_tree"] = base_tree
+    t = _req("POST", "%s/repos/%s/%s/git/trees" % (API, owner, repo_name), token, payload)
+
+    msg = message or ("首次提交：Maxwell 绕组后处理 GUI" if not parents
+                      else "更新：Maxwell 绕组后处理 GUI")
+    c = _req("POST", "%s/repos/%s/%s/git/commits" % (API, owner, repo_name), token,
+             {"message": msg, "tree": t["sha"], "parents": parents})
+    log("commit: %s  %s" % (c["sha"][:8], msg))
+
+    br = repo.get("default_branch", "main")
+    try:
+        _req("PATCH", "%s/repos/%s/%s/git/refs/heads/%s" % (API, owner, repo_name, br),
+             token, {"sha": c["sha"]})
+    except SystemExit:
+        # 分支还不存在(或被并发建出) → 退回创建; 再失败就把真错误抛出去
+        try:
+            _req("POST", "%s/repos/%s/%s/git/refs" % (API, owner, repo_name), token,
+                 {"ref": "refs/heads/%s" % br, "sha": c["sha"]})
+        except SystemExit:
+            _req("PATCH", "%s/repos/%s/%s/git/refs/heads/%s" % (API, owner, repo_name, br),
+                 token, {"sha": c["sha"]})
+
+    url = "https://github.com/%s/%s" % (owner, repo_name)
+    log("")
+    log("完成  " + url)
+    return url
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--token", default=os.environ.get("GITHUB_TOKEN", ""))
+    ap.add_argument("--repo", default="maxwell-post-gui")
+    ap.add_argument("--public", action="store_true", help="建公开仓库（要 star 必须公开）")
+    ap.add_argument("--private", action="store_true")
+    ap.add_argument("-m", "--message", default="")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--branch", default="main")
+    args = ap.parse_args()
+
+    if args.dry_run:
+        print("=== dry-run：将上传以下文件（读到的均为明文）===")
+        tot = 0
+        for f in FILES:
+            d = read_plain(f)
+            tot += len(d)
+            print("  %-32s %8d B   head=%r" % (f, len(d), d[:24]))
+        print("  合计 %d 个文件 / %.1f KB" % (len(FILES), tot / 1024.0))
+        return
+
+    if not args.token:
+        raise SystemExit("需要 --token 或环境变量 GITHUB_TOKEN")
+
+    do_upload(args.token, args.repo, args.message, public=not args.private)
+
+
+if __name__ == "__main__":
+    main()

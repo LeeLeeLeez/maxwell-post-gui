@@ -1,0 +1,65 @@
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.spec
+
+# ============ 虚拟环境 / 依赖 ============
+env/
+venv/
+.venv/
+wheelhouse/
+
+# ============ Ansys 工程与仿真结果（体积巨大，且含项目数据）============
+*.aedt
+*.aedtresults/
+*.aedb/
+*.aedtlock
+*.lock
+*.asol
+results_backup/
+*.bak_*
+*.bak_desense
+*backup*.aedt
+
+# ============ 绝不能上传的凭据 ============
+.gh_token
+
+# ============ 运行产物 ============
+*.log
+*.csv
+*.tab
+*.fldplt/
+aedt_gui_config.json
+.state_baseline.json
+
+# ============ 图片：只放行 docs/ 下的文档配图 ============
+*.png
+*.jpg
+*.bmp
+!docs/*.png
+!docs/*.jpg
+
+# ============ 临时 / 调试脚本（一次性排查用，不入版本库）============
+_*.py
+_*.log
+probe_*.py
+probe_*.log
+try*.py
+smoke_*.py
+verify_state*.py
+diag_*.py
+
+# ============ 本地环境 / 编辑器 ============
+.workbuddy/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ============ 本机快捷方式脚本（含个人路径）============
+_make_shortcut.py
+_verify_shortcut.py
+*.lnk
