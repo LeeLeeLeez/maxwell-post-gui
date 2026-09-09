@@ -37,7 +37,29 @@ else:
 WORKDIR = APP_DIR   # 子进程 cwd / 配置文件所在目录
 
 def _backend(name):
+    """子进程要执行的脚本路径。
+
+    冻结模式下**不能**直接用 sys._MEIPASS 里的副本：Python 会把「脚本所在目录」
+    塞进 sys.path[0]，而 _MEI 临时目录里混着打包时那个 Python 的 .pyd；
+    子进程若是另一个版本的解释器，import 扩展模块就会拿到版本不符的那个，报
+    "Module use of python312.dll conflicts with this version of Python"。
+    → 优先用 exe 旁边真实存在的 .py；旁边没有就拷一份到干净的临时目录。
+    """
+    local = os.path.join(APP_DIR, name)
+    if os.path.isfile(local):
+        return local
+    if getattr(sys, "frozen", False):
+        import shutil, tempfile
+        td = os.path.join(tempfile.gettempdir(), "maxwell_post_run")
+        try:
+            os.makedirs(td, exist_ok=True)
+            dst = os.path.join(td, name)
+            shutil.copy2(os.path.join(_RES, name), dst)
+            return dst
+        except Exception:
+            pass
     return os.path.join(_RES, name)
+
 
 BACKEND = _backend("aedt_gui_backend.py")
 PIPELINE = _backend("current_integral_pipeline.py")
@@ -311,6 +333,11 @@ class Runner:
         for k in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP",
                   "PYTHONNOUSERSITE", "PYTHONUSERBASE"):
             e.pop(k, None)
+        if getattr(sys, "frozen", False):
+            # 保险: 剥掉 PyInstaller 塞进 PATH 的临时解压目录(_MEIxxx/_internal)
+            e["PATH"] = os.pathsep.join(
+                p for p in e.get("PATH", "").split(os.pathsep)
+                if "_MEI" not in p and os.path.basename(p) != "_internal")
         e["PYTHONIOENCODING"] = "utf-8"
         e["PYTHONDONTWRITEBYTECODE"] = "1"
         return e

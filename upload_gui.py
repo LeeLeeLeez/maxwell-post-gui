@@ -54,8 +54,10 @@ class Uploader(tk.Tk):
         self.v_tok = tk.StringVar()
         self.v_repo = tk.StringVar(value="maxwell-post-gui")
         self.v_msg = tk.StringVar()
+        self.v_tag = tk.StringVar()
         self.v_pub = tk.IntVar(value=1)
         self.v_remember = tk.IntVar(value=0)
+        self.v_exe = tk.IntVar(value=1)
 
         if os.path.isfile(TOKEN_FILE):
             try:
@@ -85,14 +87,23 @@ class Uploader(tk.Tk):
         ttk.Entry(top, textvariable=self.v_msg, width=52).grid(
             row=2, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(8, 0))
 
-        row3 = ttk.Frame(top)
-        row3.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(8, 0))
-        ttk.Radiobutton(row3, text="公开（才能收 star）", variable=self.v_pub,
+        ttk.Label(top, text="发布 Release").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(top, textvariable=self.v_tag, width=30).grid(
+            row=3, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Label(top, text="填 v1.0.0 就顺带发版本；留空 = 只提交不发布",
+                  foreground="#94A3B8").grid(row=3, column=2, columnspan=2, sticky="w",
+                                             padx=(8, 0), pady=(8, 0))
+
+        row4 = ttk.Frame(top)
+        row4.grid(row=4, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Radiobutton(row4, text="公开（才能收 star）", variable=self.v_pub,
                         value=1).pack(side="left")
-        ttk.Radiobutton(row3, text="私有", variable=self.v_pub,
+        ttk.Radiobutton(row4, text="私有", variable=self.v_pub,
                         value=0).pack(side="left", padx=(12, 0))
-        ttk.Checkbutton(row3, text="记住 Token（存到本地 .gh_token）",
+        ttk.Checkbutton(row4, text="记住 Token（存到本地 .gh_token）",
                         variable=self.v_remember).pack(side="left", padx=(18, 0))
+        ttk.Checkbutton(row4, text="打包 exe 并作为附件上传（约 40 秒）",
+                        variable=self.v_exe).pack(side="left", padx=(18, 0))
         top.columnconfigure(1, weight=1)
 
         bar = ttk.Frame(self, padding=(12, 0))
@@ -165,6 +176,7 @@ class Uploader(tk.Tk):
         token = self.v_tok.get().strip()
         repo = self.v_repo.get().strip() or "maxwell-post-gui"
         msg = self.v_msg.get().strip()
+        tag = self.v_tag.get().strip()
         public = (self.v_pub.get() == 1)
         if not token:
             messagebox.showwarning("缺 Token", "先填 GitHub Token（勾 repo 权限那个）。")
@@ -188,7 +200,11 @@ class Uploader(tk.Tk):
 
         def work():
             try:
-                url = gh_upload.do_upload(token, repo, msg, public=public, log=self._log)
+                url = gh_upload.do_upload(token, repo, msg, public=public,
+                                          log=self._log,
+                                          release_tag=(tag or None),
+                                          release_notes=msg,
+                                          with_exe=bool(self.v_exe.get() and tag))
                 self.q.put(("done", url))
             except SystemExit as e:
                 self.q.put(("err", str(e)))

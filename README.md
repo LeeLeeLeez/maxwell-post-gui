@@ -17,9 +17,11 @@
 
 ## 📸 界面
 
-<img width="1082" height="832" alt="image" src="https://github.com/user-attachments/assets/7766e0a1-cf04-49c8-b4a4-85b97b3a51bf" />
+![GUI 主界面](docs/screenshot.svg)
 
-
+> 首图为矢量界面示意（`docs/screenshot.svg`）。想换成真机截图：直接在 GitHub 仓库页面
+> 把 PNG 拖进 `docs/` 目录即可（网页端上传不受本地加密影响），然后把上面的文件名改成
+> `docs/screenshot.png`。
 
 九个功能页：
 
@@ -115,6 +117,24 @@ pythonw aedt_gui.py
 
 ---
 
+## 📦 打包成 exe（可选）
+
+仓库里带了现成的 PyInstaller 配置 `MaxwellPost.spec`：
+
+```bash
+pip install pyinstaller
+pyinstaller MaxwellPost.spec --noconfirm --clean
+# 产出：dist/MaxwellPost.exe（约 22 MB）
+```
+
+三个要注意的地方：
+
+1. **必须用带 tkinter 的 Python 打包**（有些 venv 里的 Python 没装 tkinter，打出来跑不起来）
+2. spec 的 `datas` 里必须带 `indcalc_core.py`，否则 matrix等效 页在 exe 里会找不到模块
+3. exe 要放在**旁边有 `env\Scripts\python.exe`（装了 PyAEDT）**的目录里，AEDT 相关的 tab 才能干活；
+   也可以在 GUI 顶部「环境设置」里手动指定解释器。
+   matrix等效 是纯 numpy 离线计算，不依赖 AEDT，任何机器都能用。
+
 ## 📁 目录结构
 
 ```
@@ -164,9 +184,34 @@ A：确认 AEDT 已打开工程并且目标设计是激活设计；确认 gRPC �
 A：把 `indcalc_core.py` 放在 GUI 同目录，或设置环境变量 `MAXWELL_MATRIX_CORE_DIR`
 指向它所在目录；并安装 numpy。
 
+**Q：matrix 结果读出来是 1×1？**
+A：说明该设计的 Matrix 参数里只配了一个 Winding。到 Maxwell 的
+`Excitations → Matrix` 里把需要的 Winding 都加进同一个 Matrix。
+
 **Q：支持 Maxwell 2D 吗？**
 A：当前面向 3D（AC Magnetic / Transient）。2D 的剖切与积分逻辑不同，暂未适配。
 
+**Q：我的机器装了 DLP 透明加密，能直接用 git 提交吗？**
+A：不能。非白名单进程（git.exe、PowerShell）读到的源文件是密文
+（文件头 `%TSD-Header-###%`，大小被填充成 1024 的整数倍），git 会把它当二进制 blob
+提交，仓库里就是一堆解不开的乱码 —— 而且被 git 判为 binary 后连 diff 都做不了。
+
+   判断方法：`git add` 后 `git diff --cached --stat`，若显示 `Bin 0 -> 12288 bytes`
+   而不是行数，说明踩中了这个坑。
+
+   绕法：Python 在白名单里、读到的是明文，所以本仓库提供上传器
+   直接调 GitHub REST API 建 commit，完全不用 git.exe。
+   双击 `upload_gui.py`（或桌面快捷方式）会弹出图形界面，填 Token 即可；命令行则是：
+
+```bash
+set GITHUB_TOKEN=ghp_xxx
+python gh_upload.py --repo maxwell-post-gui --public      # 首次，自动建库
+python gh_upload.py --repo maxwell-post-gui -m "修某个 bug"  # 之后每次更新
+```
+
+   补充：PNG 更麻烦——驱动会**异步**加密，Python 刚写完读回是明文，几分钟后再读就成了
+   密文，防不胜防。所以首图用 **SVG**（纯文本，不触发加密）；真机截图建议在
+   GitHub 网页端直接上传，别走本地。
 
 ---
 

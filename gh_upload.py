@@ -28,6 +28,7 @@ import base64
 import json
 import os
 import sys
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -52,6 +53,7 @@ FILES = [
     "docs/screenshot.svg",
     "gh_upload.py",
     "upload_gui.py",
+    "MaxwellPost.spec",
 ]
 
 DESCRIPTION = ("Post-processing GUI for Ansys Maxwell winding simulations: "
@@ -95,7 +97,87 @@ def read_plain(rel, fix_readme=None):
     return data
 
 
-def do_upload(token, repo_name, message="", public=True, log=print):
+def _clean_env():
+    e = dict(os.environ)
+    for k in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+        e.pop(k, None)
+    return e
+
+
+def _find_build_python(log=print):
+    """找一个同时具备 PyInstaller 和 tkinter 的解释器。"""
+    import shutil
+    cands = []
+    if not getattr(sys, "frozen", False):
+        cands.append([sys.executable])
+    p = shutil.which("py")
+    if p:
+        cands.append([p, "-3.12"])
+        cands.append([p])
+    p = shutil.which("python")
+    if p:
+        cands.append([p])
+    for cmd in cands:
+        try:
+            r = subprocess.run(cmd + ["-c", "import PyInstaller, tkinter"],
+                               capture_output=True, timeout=60, env=_clean_env())
+            if r.returncode == 0:
+                return cmd
+        except Exception:
+            continue
+    raise RuntimeError("没找到同时装了 PyInstaller 和 tkinter 的 Python")
+
+
+def build_exe(log=print):
+    """把当前 GUI 源码重新打成 exe，返回 dist/MaxwellPost.exe 路径。"""
+    cmd = _find_build_python(log)
+    argv = cmd + ["-m", "PyInstaller", "MaxwellPost.spec", "--noconfirm", "--clean"]
+    log("$ " + " ".join(argv))
+    pr = subprocess.Popen(argv, cwd=HERE, env=_clean_env(),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace", bufsize=1)
+    for line in pr.stdout:
+        line = line.rstrip()
+        if line:
+            log("   " + line)
+    pr.wait()
+    if pr.returncode != 0:
+        raise RuntimeError("PyInstaller 退出码 %s" % pr.returncode)
+    exe = os.path.join(HERE, "dist", "MaxwellPost.exe")
+    if not os.path.isfile(exe):
+        raise RuntimeError("没找到产物: %s" % exe)
+    if open(exe, "rb").read(4) == b"%TSD":
+        raise RuntimeError("exe 是 DLP 密文，拒绝上传（删掉 dist 目录重打一次）")
+    log("exe 就绪: %s  %.1f MB" % (exe, os.path.getsize(exe) / 1048576.0))
+    return exe
+
+
+def upload_asset(owner, repo_name, token, release_id, path, log=print):
+    """把 exe 挂到某个 Release 上。"""
+    from urllib.parse import quote
+    name = os.path.basename(path)
+    data = open(path, "rb").read()
+    if data[:4] == b"%TSD":
+        raise RuntimeError("附件是 DLP 密文，拒绝上传: %s" % name)
+    url = ("https://uploads.github.com/repos/%s/%s/releases/%s/assets?name=%s"
+           % (owner, repo_name, release_id, quote(name)))
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Authorization", "Bearer %s" % token)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Content-Type", "application/octet-stream")
+    req.add_header("User-Agent", "gh_upload.py")
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            j = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError("[HTTP %d] %s" % (e.code, detail))
+    log("附件已上传: " + j.get("browser_download_url", name))
+    return j.get("browser_download_url", "")
+
+
+def do_upload(token, repo_name, message="", public=True, log=print,
+             release_tag=None, release_notes="", with_exe=False):
     """执行一次上传（建库 / 追加 commit）。返回仓库 URL。"""
     # 1. 我是谁
     me = _req("GET", API + "/user", token)
@@ -186,6 +268,30 @@ def do_upload(token, repo_name, message="", public=True, log=print):
             _req("PATCH", "%s/repos/%s/%s/git/refs/heads/%s" % (API, owner, repo_name, br),
                  token, {"sha": c["sha"]})
 
+    if release_tag:
+        exe = None
+        if with_exe:
+            try:
+                exe = build_exe(log=log)
+            except Exception as ex:
+                log("!! 打包 exe 失败，本次不传附件：%s" % ex)
+        try:
+            rel = _req("POST", "%s/repos/%s/%s/releases" % (API, owner, repo_name), token,
+                       {"tag_name": release_tag,
+                        "name": release_tag,
+                        "body": release_notes or ("Release " + release_tag),
+                        "target_commitish": c["sha"],
+                        "draft": False, "prerelease": False})
+            log("Release 已发布: " + rel.get("html_url", ""))
+        except SystemExit as e:
+            log("Release 发布失败（可到网页 Releases 页面手动补）：%s" % str(e)[:200])
+            rel = None
+        if rel and exe:
+            try:
+                upload_asset(owner, repo_name, token, rel["id"], exe, log=log)
+            except Exception as ex:
+                log("!! 附件上传失败：%s" % ex)
+
     url = "https://github.com/%s/%s" % (owner, repo_name)
     log("")
     log("完成  " + url)
@@ -200,6 +306,11 @@ def main():
     ap.add_argument("--private", action="store_true")
     ap.add_argument("-m", "--message", default="")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--release", default="",
+                    help="顺便发布 Release，填 tag 名如 v1.0.0；留空则只提交不发布")
+    ap.add_argument("--release-notes", default="", help="Release 说明")
+    ap.add_argument("--with-exe", action="store_true",
+                    help="发布 Release 时先打包 exe 并作为附件上传")
     ap.add_argument("--branch", default="main")
     args = ap.parse_args()
 
@@ -216,7 +327,9 @@ def main():
     if not args.token:
         raise SystemExit("需要 --token 或环境变量 GITHUB_TOKEN")
 
-    do_upload(args.token, args.repo, args.message, public=not args.private)
+    do_upload(args.token, args.repo, args.message, public=not args.private,
+              release_tag=(args.release or None), release_notes=args.release_notes,
+              with_exe=args.with_exe)
 
 
 if __name__ == "__main__":
