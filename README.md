@@ -17,9 +17,8 @@
 
 ## 📸 界面
 
-![GUI 主界面](docs/screenshot.svg)
+![Uploading image.png…]()
 
-> `docs/screenshot.png`。
 
 九个功能页：
 
