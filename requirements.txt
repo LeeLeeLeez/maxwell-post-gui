@@ -1,0 +1,22 @@
+# Maxwell 后处理 GUI —— 依赖清单
+#
+# 安装：
+#     pip install -r requirements.txt
+#
+# 只用到「matrix等效」tab 的话，装 numpy 就够了，
+# 甚至可以不用 AEDT —— 那个 tab 是纯 numpy 离线算的。
+
+# ---------- GUI 本体 ----------
+# tkinter：Python 官方安装包自带（Windows 安装时确保勾选了 "tcl/tk and IDLE"）
+# numpy  ：matrix等效 tab 的集总计算用（长度碰 reverse / T 型等效 / 副边均流）
+numpy>=1.24
+
+# ---------- AEDT 相关 tab ----------
+# 扫描 / OhmicLoss / 电流积分 / 剖面 / 场计算器 / 体积排序 / 场图 / 温度赋值
+# 这些是通过子进程调 PyAEDT 完成的，需要装下面这个。
+# 本机验证过的组合：pyaedt 1.4.0 + Ansys AEDT 2026 R1 + Python 3.13
+pyaedt>=0.9
+
+# 附带的（pyaedt 会自己拉，一般不用手写）：
+#   grpcio   —— 与 AEDT 的 gRPC 通信（本机 1.83.0）
+#   protobuf —— （本机 6.33.6）

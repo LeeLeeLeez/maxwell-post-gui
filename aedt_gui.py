@@ -20,6 +20,7 @@ aedt_gui.py —— Maxwell 绕组后处理 GUI（剖面电流积分 / OhmicLoss 
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -49,13 +50,19 @@ def _backend(name):
     if os.path.isfile(local):
         return local
     if getattr(sys, "frozen", False):
+        # 旁边没有源码 → 把后端「一整组」脚本拷到干净的临时目录
+        # （只拷单个文件的话，backend import aedt_env/section_cs 会找不到）
         import shutil, tempfile
         td = os.path.join(tempfile.gettempdir(), "maxwell_post_run")
         try:
             os.makedirs(td, exist_ok=True)
+            for n in (name, "aedt_env.py", "section_cs.py", "indcalc_core.py"):
+                src = os.path.join(_RES, n)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(td, n))
             dst = os.path.join(td, name)
-            shutil.copy2(os.path.join(_RES, name), dst)
-            return dst
+            if os.path.isfile(dst):
+                return dst
         except Exception:
             pass
     return os.path.join(_RES, name)
@@ -108,6 +115,8 @@ def save_cfg(d):
 
 # 剖切面：界面显示 -> AEDT 平面名（XZ 面在脚本里叫 ZX）
 PLANES = [("XZ（法向 Y）", "ZX"), ("YZ（法向 X）", "YZ"), ("XY（法向 Z）", "XY")]
+# 复用已有剖面、又没有 I_sec_* 表达式时，标量分量取当前剖切面
+PLANE_SCALAR = {"ZX": "ScalarY", "YZ": "ScalarX", "XY": "ScalarZ"}
 
 # ---------- 主题：现代浅色（风格参考 png2bar_chat，基于 ttk 自带 clam 深度定制） ----------
 PALETTE = {
@@ -121,6 +130,10 @@ PALETTE = {
     "accent_soft": "#E8F0FE",  # 选中底色
     "danger": "#EF4444",
     "ok": "#16A34A",
+    # 左侧竖排菜单
+    "menu_bg": "#FBFBFD",      # 菜单底色（比内容区略深一点）
+    "menu_fg": "#475569",      # 菜单文字
+    "menu_hover": "#F1F5F9",   # 悬停
 }
 
 FONT_FAMILY = "Microsoft YaHei UI"
@@ -309,6 +322,272 @@ def text_kw():
                 selectforeground=p["text"],
                 insertwidth=2, padx=6, pady=4, spacing1=1)
 
+
+# ------------------------------------------------------- 左侧竖排菜单
+# 图标取自 PyDracula 的 cil-* 资源（原图是白色，专为深色菜单设计），
+# 运行时用 alpha 通道重新着色，以适配本文件的浅色主题。
+# 内嵌 base64 是为了让 aedt_gui.py 继续保持单文件、无外部资源依赖。
+ICON_B64 = {
+    "cil-home":
+        "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",
+    "cil-battery-alert":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC32lUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVTRbpswFP0Vy3vZpBnbEAhYZVWXdGse2Ko2UvdqbJOgAmaYNEl/bQ/7pP3CTBLStGvTakhI9vW5557re31PTlc1F7eqBama5VUM//z6DUEuY3jjJySpR2qeX9w36vr+21Tc34pIwtNP4GTFVmVdqpaDVVlUhq1iyKVOFbPrzowh2EDa2xiedQfgR3IJRrpRwHcCJOggBMPIocGAeMFH4BIaYRJi6iFCGQmYPwS7D9pojczY1fjLLpbdxXDetjXDeLlcOkvP0c0M0yiyHC52XWQRyKyrlq9QZd71DGNlRJPXba4r0O15qhdtDGGfQlnvaSvjbNJxhC7xiteYOgT3QCn2uHrRFJvgUmBVqFJVrbFYusfWc91qM9cvUO+PHwWwSpLkuJay3KNNe37XHkeb6bpW+EoZvWiEOr+zMt917jUbNYq3uplqXfSFuuw1Adf6gvc3eSX10nw4cFBj+8fQJS5BxJbMm5KI+YR5Q7tmhGyhiZZ5tj6E+oi4Uzq01WV+9AhqW0bylr8KloJluim5TTgv+UzhuppBsL9GNtKFbmxgy+Id2iej0WWjs7ywB+bq62cwOR8FNAoC5Dp0oyFJ2KQyLa+EmoxjaC1OnksWer7MoiBFkhCKXDHIUCpkirKIu27AaUZ50PuPtVh0LdD5b1+D1MJyPMigg4FIAyKQR10PRbb7UZj5AmXh0BckGHB/6PZs35vcPkheHLJ2qqRllF6o/DRUSEWhi9J0ECFORbcSLrcsURaQru23TBe5sTVe757Btfq5WxU52DQP46J7FDEUm+JKuDPnz9zHmyLv/JdzVR3tki3M6Kxd8kadzWyWr3Yhfkm84XfHpb+tlP9Kf7YR/0f6zknMeTVTdsLiTTL4oSj4ab3wk7nVm+ww3MD7KWw3+zmuKkvd2Cn9F/nS2KNvtsEXAAACYklEQVQ4jZXUT4scVRQF8N+t6e6ZbkbtCIN2D01kCBhEgkoQFBeCK/0Kfhe/gmv3fgfdiLhR/JcsosEwKmL3VEfEaMwQKz1T9VzUq9gztGIO1OK9xzvvnnvuqYCjo6OIiEgpiYjU7/fT3t4eWCwWiqIIhA1IKaX9/f3UrXvdftM0ICLi5OTkQlmWM9ypqmo+GAxSREgpbSRcX0dZlkM8gSEq/I5LeAvf4COM8/l5nOAOqul0mroKr+ByvnSET/EkXsQ9PI6ruJhJmjX5gc9wOJ/PjyMieng7Xx7kwx/zpRXqXP1VvJwJGqRczGW8h+OiKL7vCCdZ1ie4jlO8hCJX8RPezQ+uY4x3Mvmoqqo0HA5TL288wN3pdPpHWZbbeS8hRcRp0zT3zjQ+Qq7+Pl7FbDgcfomvO8LzY1FkSVt1XSuKonM4pZQik65wDc9hhtfxV8/m+aq1jq+2trbUdW13dzeNx2O5AGVZPsDHuIk38SwmvQ1kDe7iO9yeTCYPSdYxnU5PcYjDsiz3tNMQmwhrLPChdib/LxKaTYQFnsIruLVcLucppVgPREopFUXR18q8iDfwDH7oTOlmq3vpzyznly6Sa2edy9taI57H07iNRWdKoY1hgS38mj8R0f8Xedt4ARdwC1/gRid5nGVOMHLWhPOGdGkZ4jF8jg+qqroxGAz08HPu12v4Decr2kSYspJL+Ar3d3Z2AkUP72szPNL+PTb+9zaga9U1LFNKKSKaHr7V5nWT4/9FRpv747quT2azGbQxWi6X6rp+BL5/sFqtHBwcPFz3oK7ryKPwyBiNRmd6/Dfh4OTpxWS+rQAAAABJRU5ErkJggg==",
+    "cil-chart-line":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC4GlUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVRLbtswEL0KoW5aoBRJ/UVEDVI7bbxQGyQG0i1FUrYQSVRFObZztS56pF6hlG05Tpo4QQUIIIdv3rzhDOfkdNUwfis7kMlZUSfWn1+/LVCIxLrxU5w2IzkvLu5beX3/bcrvb3ksrNNP4GRFV1VTyY6BVVXWmq4SiwmVSWrWvRlZYAPpbhPrrD8AP9JLMFKtBL4dQE68CISxTQIPu8FH4GASIxwh4kJMKA6oH4LdZ5lorcjp1fjLLpbZJda86xqK0HK5tJeurdoZInFsOBzkONAgoF7XHVvBWr8bGMZS87ZoukLVoN+zTC26xLKGFKpmT1tre5OOzVWFVqxBxMZoAAq+xzWLttwEFxzJUlay7rTBkj22matO6bl6gXp//CiAUZKmx7VU1R6tu/O77jhaT9eNRFdSq0XL5fmdkfmud2/oqJWsU+1UqXIo1OWgCTjGF7y/KWqhlvrDgYMcmz+xHOxgiE3J3CmOqY+pG5s1xXgLTZUo8vUh1IfYmZKQ+hEl0SOoaRnBOvYqWHCaq7ZiJuGiYjOJmnpmgf010pEqVWsCGxb30D4ZjS5blRelOdBXXz+DyfkoIHEQQMcmGw1pSie17ljN5WScWMZiF4WgcYijXAoPkhib7GKPwcwlPvQjLN0Mk9BzssF/rPiib4Hef/sahOKG40EG4yGPPC5hxsMIisBzYUw4h56fC59FPs9CMbB9bwvzIFl5yNqrEobRjWSAfeZCyQLH3I0XwygUYS8tz4kInNhx+rbfMl0U2tR4vXsG1/LnblUWYNM8Rlb/KBKLb4prFGzNxTP38abIO//lXNZHu2QL0yrvlqyVZzOT5atdiF4Sr9ndcelvK+W/0p9txP+RvnPic1bPpJmwaJMMeigKelov9GRuDSYzDDfwYQqbzX6Oy9pQt2ZK/wX8ytVhVjVyzQAAAkhJREFUOI3N1D+P3FQUxuHn2sazi4ZkBBEIeSEpGBAEhBAU6aChgA6J7wB0VPCFkJIICRoESCipqEMFCv+WCHY8gqTZoOxml7UPha9HswkhlBzJkmXf+/N73vNe83+v1LZtgYiIaJrmP23a2dmRhlo9iwhN00SFF/BnSunG9vb2zclkYm9vz3w+vyewLEt93x9XluEF3sGbOF3XNaTNzc1/VRgRKaVU4IF8VSjbti0qPIoWk9xGioi4T9c1TuE0OhxiD9cr9AjESnZR/CMlewcn8DLewAwnscT5YoTdRxFWPiUcYIGreAQv4Xk8XuUFd9VyudR1na2trXVgyutv41f8jmt4CDcxre4ERYSiKHRdl0bli8ViVFdk4Emcwwf4Al8ZPH3wLuAYrul0GoeHh+utlga/H8breB+f44LB0zmWx4Ax5KHf398XEU/i9nK5/KPrulSWZR8Rp/AWXsMlXMQvhthcw0FlbSBN02jbtt7Y2DiXVVyPiMtFUXwXEbMMewW/4WN8j7+ymF2ZLPuibdsTOIu38TRuYRMTPINXM+xTfBMR40BjZIxTDkPin8W7eAwf4YkMeTF/4Et8gisZFlVVRUpJXdcxm81UeXIH2dQ5zuBDQ8amhmi8l2EX8IO1qB0dHaWIkAcYo4eRN/6Mr/FtbveWIRY/GY7nou/7gzEJ60e0LMvBu7ZtLxrO4Y95UglHhoiMtfLoHpWwi6sVtvEUnjP8KGpD5tYhfb5fhX3tXWTbFtit8Fn2bra2sHdc0TrozhqBN7D7NzME2OkBEdOSAAAAAElFTkSuQmCC",
+    "cil-input-power":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC3mlUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVTRbpswFP0Vi71s0oxtMASssqpLujUPbFUbqXt1bJOgAmbgNEl/bQ/7pP3CTBLStGvTakhI9vW5557re31PTlc1F7fKgKma5VXi/Pn12wG5TJybIMVpPVTz/OK+Udf33ybi/lbE0jn9BE5WbFXWpTIcrMqiatkqcbjUU8XsujMjB2wg5jZxzroD8CO9BEPdKBC4IRSERmAQuySk2A8/Ag+TGOEIER9iwnDIggHYfY6N1siMXY2+7GLZXeLMjakZQsvl0l36rm5miMSx5fCQ50GLgO26MnwFq/ZdzzBSrWjy2uS6At2eT/XCJI7Tp1DWe9qqdTfpuEKXaMVrRFyMeqAUe1y9aIpNcCmQKlSpKtNaLNlj67k2up3rF6j3x48CWCVpelxLWe7RrTm/M8fR7WRdK3SlWr1ohDq/szLfde41GzaKG91MtC76Ql32moBnfcH7m7ySetl+OHBQI/snjoc9DLEtmT/BMQswo92WYbyFplrm2foQGkDsTciABTHD9BHUtozkhr8KloJluim5TTgv+Uyhupo5YH+NbKgL3djAlsU/tI+Hw8tGZ3lhD9qrr5/B+HwYkjgMoeeSjYY0ZeOqNbwSajxKHGtx81yyMAuCkAQZ9BSOIJVUwqmKMYwCTiMaEBFGWe8/0mLRtUDnv30NUgvL8SBDCEp96wYjTAIYDGgEuZABJAMhqY9ppnDYs31vcvsgeXHI2qmSljHi1CdEWkEqszy+VRXROIZZhgPKBY8jLLu23zJd5K2t8Xr3DK7Vz92qyMGmeRgX3aNIHLEprnR25vyZ+3hT5J3/cq6qo12yhbU6M0veqLOZzfLVLkQviW/53XHpbyvlv9KfbcT/kb5zEnNezZSdsGiTDHooCnpaL/RkbvUmOww38H4K281+jqvKUjd2Sv8FlG3VqH60qLEAAAKLSURBVDiNddS/blxFFAbw35m7dozBshTFDrrLpgAkBAUJf0SFBEhAlAqJDiRaHoWCZ6BAgjdAokhDg9KFjgjFCCFyvQIbCoKRHXvvHYqZXdabZKQpZs6Z73znnO9MqGt/fz8gIi7gTYzxI24jMGADb2GCb/DnMAxDROTxeAzSHDDKSmjwLF7G09WcIgLW8Byu4ilESkkNeB4Que6oD5/AerUNs9kMZhhhEz3knOdvwajrusjldh1bldVFPInLeB6paZpcA81tEzQRcYB/a0mMUkpRo+zgFbxR9+XKcrcGm9Xza9X2Ee7hW9zd29s73t7eNkJKKfU552fwLq7je/xWs2iXyhL4Bb9WptfR4d7m5ubx6elpjGAYBhExwonS1S9wVGsczq+h3u3UtDNSzllEGK04n+EAP+F+vctL9qjnRpHV0VKA0pQVwFi6W2Um5zzXalI02SwFeSRgXjJm5LZtF85d10VEzM/Dij/O63Au6n6J4UMs6+qVeoeVOifkOgVH1fEqrqiink6njwK9pIzgRTyoewE4zDPCD/gDn+B1Reim02kcHh6KiBwRV/AebuA7/IyTKKzyqG3b3HWdiDiIiFtKsT9WOj6qQe5XaY3xdmX3AF/jbs75LCK0bft/7l3XUYZ9A+/jU2USvoqIWznnUWV+A3/hM0znNZ83b9GU9fV1TdOozG7iy1rHDyrYS8pk7OHzCgbW1tYWnV4A7u7uzn+OIaV0jDv4HReULm7gtALtI+ece+SdnZ1Ft1Z1iDKKyg/S4EV8iBeUcTurwDEMQ55MJufengOMKD9Z0zT6vj/DP8qX9Y4ilRP8HRG573tbW1sPkXmccE2n0028imsVNClzfrtt2zuPe/cfs+HYF9TE0nsAAAAASUVORK5CYII=",
+    "cil-layers":
+        "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",
+    "cil-code":
+        "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",
+    "cil-equalizer":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC32lUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVTdbpswFH4Vi91s0oxt/gJWWdUl3ZoLtqqN1N0a2ySogBkmTdJX28Ueaa8wQ0Kadm1aDQnJPv7Odz77/JycrmvGb2ULUjnPq9j68+u3BXIRWzd+gpN6LBf5xX0jr++/zfj9LY+EdfoJnKzpuqxL2TKwLotK03VsMaFSSc26MyML9JD2NrbOugPwI7kEY9VI4NsB5MQLwSiySeBhN/gIHEwihENEXIgJxQH1R2D3WSZaIzJ6Nfmyi2V2sbVo25oitFqt7JVrq2aOSBQZDgc5DjQIqDdVy9aw0u8GhonUvMnrNlcV6PYsVcs2tqzhCmW9p6203V/H5qpEa1YjYmM0AAXf4+plU/TBBUeykKWsWm2wZI+tF6pVeqFeoN4fPwpglCTJcS1luUfr9vyuPY7Ws00t0ZXUatlweX5nZL7r3Gs6biRrVTNTqhgSdTloAo7xBe9v8kqolf5w4CAn5o8tBzsYYpMyd4Yj6mPqRmZNMd5CEyXybHMI9SF2ZmRE/ZB6+BHUlIxgLXsVLDjNVFMyc+G8ZHOJ6mpugf0z0rEqVGMCGxb30D4djy8bleWFOdBXXz+D6fk4IFEQQMcmvYYkodNKt6zicjqJLWOx81xQHuEoc0IJsRhJmEVGSoglgZkkYUC4Q1gUDf4TxZddCXT+224QihuOBxk+caKA+Sn0IpFCl3sjGDoeg5Klo8xJ/VQQNrB9b3LTkKw4ZO1UCcMYSIGJkA70Rub9XeKlkInM9JWIsBtiozDMurLfMl3k2uR4s2uDa/lztypy0BcPZbxritjifXKFtTPnz7zHmyLv/FcLWR2tki1Mq6xdsUaezc0tX61C9JJ4ze6OS39bKv+V/mwh/o/0nRNfsGouzYRF/WXQQ1LQ03yhJ3NrMJlh2MOHKWw2+zkuK0PdmCn9F+UK1y2N+juDAAAChklEQVQ4jY3VwYscRRQG8F/VTBJ31jV6SrZXRUUSiHjQgAlIiIgXD57Uo4j+IR69+xd4FL3kIAqBaEDUg4q5KDEhUTRur7vGrIzGnUx2+3mo6jg7YcEHTVVXV33v1fe+9zpB27aH8CwW8R62u65LKaVIKT2KF3EF3+IGEjIex2lcaprmPAwVW8RRPID3kXLOIiLhfhzHDi5WsP4Z4Rj+XltbExGpBxxiCfdVzyJCSgn2VdARBoiZM8fwJMYRcTgi1nP9uI0JbqGz2zpM654uIgIL9UYnagAP4VRKaSnPHJy9ij7KGb4S0srKSqDBK5XDT6rTV3GkBzyJU3iqzvenYvawgziCr3AG39T1o8O2bV/Gc7iOLbyJMS6nlG7WKOdtA1/ieRxSuL+OC7lGNsQXddNj1fvi8vLyXUht2yZFOudxVUnKBB/hp6zIYauO6nzWwn+ZpfC5hUsKf5v4Hue6rptkfKxI5g28htXKzebGxsZeoGoAf2AdmxExzTmnIT5X9PW6orW3sRoR29PpVM55vyL4e+u+3lKlah8Gk8kkFhYWYtg0za22bX/Bz/XgKm7nnCMinsZLeAT3oFU0uToHbjQa6bou9bK5rYh62nMZEQfxDB7Gu0rZHccTTdPclfqdnZ07BPfjoD65SmWpgmV8gK9xGA/Og81aDzhLelRB/6Nk8ABeUETfr+1pw7n3UOpVSulPnFWq4i1cwzv47P9EuHsx5x78R0XsP+BTfIdx27Z9QsKcpHrAvgHMN4ub+F2pjN/wl5K0We53neuvPFUEOkHtUGVMKW0pMhkrLSyU7tI7/BU3BoOBruvuAG7Wqx2oEUT/C6iRfag0hHH11ifumlJp67Xu41/q/PenpkFBLwAAAABJRU5ErkJggg==",
+    "cil-signal-cellular-3":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC4GlUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVTdbpswFH4Vi91s0ox/CCS2yqou6dZcsFVtpO7W2CZBBcyANElfbRd7pL3CDAlp2rVptUiR7OPvfOc7nJ+T03Up5K1uQKznaRE6f379dkCqQufGj3BUjvUivbiv9PX9t5m8v5VMOaefwMmar/My140A6zwrar4OHaFMrLk9t2bkgA7S3IbOWfsAfkSXYGwqDXw3gJIMRmDIXBIMsBd8BBQThvAIEQ9iwnHA/SHY/RwbrVIJv5p82cWyt9BZNE3JEVqtVu7Kc001R4Qxy0ERpdAiYL0pGrGGRf2uZ5joWlZp2aSmAO1dxGbZhI7Tp5CXe9qidrt0XGlytBYlIi5GPVDJPa5cVlkXXEmkM53roqktluyx5cI0pl6YF6j3z48CWCVRdFxLnu/RdXN+1xxH17NNqdGVrs2ykvr8zsp817qXfFxp0ZhqZkzWF+qy1wSo9QXvb9JCmVX94cBBT+w/dCimGGJbMm+GGfcxHxB75hhvoZFRabI5hPoQ0xkZcp9xb/QIaltGiUa8ClaSJ6bKhU04zcVco7KYO2D/GfnYZKaygS2Ld2ifjseXlUnSzD7UV18/g+n5OCAsCCB1Sachivi0qBtRSD2dhI61uGmqeOLJGMeUwEAnDAZiMITCVz7UNGBDT/gijmnvPzFy2bZA67+dBmWk5XiQMSBDH0uWwJHACgajwQjGfsAg9T3iYWqna5D0bN+r1A6kyA5ZW1XKMhLKMEkSARPLAQfS8ggZx5ANhWKECYEJbdt+y3SR1rbGm90YXOufu1OWgq55uJDtUISO7IqrnJ05feZ7vCnyzn+10MXRLtnCapM0K1Hps7nN8tUuRC+Jr8XdcelvK+W/0p9txP+RvnOSC1HMtd2wqEsGPRQFPa0XerK3epNdhh2838L2st/jurDUld3SfwHoYdeBk7AC2wAAAf9JREFUOI2d1DtrVFEUBeBvz0yc8VUoxJioiVqInZ2Fj06jxFR2Ij6w8l/4Y8RGsPABWlhIfoCFoGgTULwzvkAsjBIz91ico5lMTIweuMU95+x119pr7Rv+Y/V6vUgpNVJK/YiYwiwmca/1r2BVVUVKKRARMYkrOIsFPPsnwKqqIiJgBBO4jL34gu/YsSHA+fl5nU4nEAVsP6ZxHA/wCvvQamwErN1u/wJrFGbTuIZHuIs32KxcWHd1Op2IiEgpJYzhIs7hJm7hLVJ5rCu5qqrfzCJiDNeL3Me4g8+oB2vWZDhgwCY5ElcLs0XMpZReoz9ct4rhHwyYknt2EtvwAb1ms6mu6+HylYBrGHBaztrtInEBW9dStgLwF7OUUoqI0SJzGg9lE/aUmvRXwCEDJgqrWblPL+Tw1uXO+oBDEzCOS/IE9IrE1c1aYzW63W4UtE04gPOYwUs8QVfuWQwW5lj+AXDgGS8Sb8hOzskT0LE6HlEAY2hfo67rvuzmBXkKevgo5+03wIb0otVoNKZkN0dxH23sKKxTYde3PF59LKWURMTwfmrJ6T+DT3LOdsuTcaowPzRQdFg2aSYiegMfPSbP+fNWKf5WvjBaDuAItqAp/5racgq24yi+lrMau8r7++h2uydwEDtLrxYLeKdc/iHHa0T+iZIT0bScxyW8w9Of8R2l2fsDywgAAAAASUVORK5CYII=",
+    "cil-mug-tea":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC4GlUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVTdTtswFH4Vy9xs0hzb+SuxyBBr2ehFNwSV2K1rO21EEmexoS2vtos90l5hTtqUjkFBixTJPv7Od77jc3xOTlc1F7fKgpma51UKf//8BUEuU3gTTcikHqpFfvHQqOuHr1PxcCsSCU8/gpMVW5V1qSwHq7KoDFulkEs9U8ytWzOGoIPY2xSetQfg++QSDHWjQOTFSNDwGAwSj8YhCeIPwCc0weQY0wARykjMogHYftBFa2TGrkaft7HcLoULa2uG8XK59JaBp5s5pkniOHzs+8ghkFlXlq9QZY56hpEyoslrm+sKtHs+03c2hbBPoax3tJXxunQ8oUu84jWmHsE9UIodrr5rii64FFgVqlSVNQ5Ld9h6oa02C/0C9e74rwBOyWRyWEtZ7tDGnt/bw2gzXdcKXymj7xqhzu+dzKPWvWbDRnGrm6nWRV+oy14T8J0veHeTV1Ivzfs9BzVyfwp94hNEXMmCKUlYRFhI3ZoRsoFOtMyz9T40QsSf0gGLEuaqtA91LSO55a+CpWCZbkruEs5LPle4ruYQ7K6RDXWhGxfYsQT79vFweNnoLC/cgbn68gmMz4cxTeIY+R7tNEwmbFwZyyuhxqMUOouX59IVmyQy5gpxP8hQ5PoWHRMSoiwJaEBnPBjwuPcfaXHXtkDrv3kNUgvH8SgjmgkZx75CcThIUCZDibgKByjwZz7P4iAiJOjZvjW5e5C82GdtVUnHqGQQhIpTlAlKkJiFHPEkGqDEj5QkfuRuULVtv2G6yI2r8Xr7DK7Vj+2qyEHXPIyL9lGkUHTFlXBrzp+5jzdF3vovF6o62CUbmNGZXfJGnc1dlq92IX5JvOH3h6W/rZT/Sn+2Ef9H+tZJLHg1V27C4i4Z/FgU/LRe+Mnc6k1uGHbwfgq7zW6Oq8pRN25K/wFF09bbYBWK2wAAAnBJREFUOI2t1MuKXUUUxvFf1dl2e03nYqRJn5iIMWh0EFDRDEQQwYlP4EBwLPgWDswr+ASCII6SSUwGAUEEYzSN12AaetPEDJLuGNPn9NnLwV7H7DQZiQUFm6q1v1rrv74q/udR2rZdwF48hhECs9wfoez6Zxtb2Oy6LmqtoOu6GI/HGjyNd3EogwueSNFtTHOtw8P4G5fxBUSEUopS+nMbjPFOBq9iAW9iE1dxPeO2sZzxz2K11hp50GYp5Sa2mwy+gYv4FPtwGtdwBt9hEXfwHD7CG3g/xXbwM75t2/ZqM2AUEdGVUroBx66UshMRs9FoFLPZ7HoeXPBQxi3jFbyOT+qQ9srKyvxzknMWEQV1MpnIjG7j5oDxWXyDx3HqPsG2bSseyQYdxtIcdnbzURzD8RQ8hv24m3PlPkEcyNT3ZfCJiDiErmkaemsdxUH8hj14CU9ltk11zxIVL+LDhDzFKbw9yLDiFi7h8+S5pfcrRM2gCZ7E8wn7ND7GRgJfnE6nuw1ePMD4Vd+pyI2qt8FWlhC59q8TEsdr+ABv6Zsxnes1g9O6BL2E9xL2M1gbJHAbvyaz5azg+2R/FJO54Eh/pdbwU5a+oDf8qt6PIuJOCu7NJK4k08MZv9ZkGSP9VbuAH/W3R7L9CzsREbl+EEcy28ALWdUVfN0ks1HOu2h3MQt0+Qgs4SRO4LPE9Dv+wA+40egtcktvkUX3HgMDUaWUHbyc/M7gy9zvsorNiIgmBc7j1Tz5iIGvdmW6J5twLiKulfk16t+BgKbrummt9Sv8mc1YHAgNR8mYy/hlsBapaDwes76+XjY2Nh7w/38b/wDi0eOpYYKrzQAAAABJRU5ErkJggg==",
+    "cil-view-quilt":
+        "iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAACXBIWXMAAAsTAAALEwEAmpwYAAAC4GlUWHRYTUw6Y29tLmFkb2JlLnhtcAABAFVURi04AFhNTDpjb20uYWRvYmUueG1wADiNnVRLbtswEL0KoW5aoBRJfS0iapDaaeOF2iAxkG5pkrKFSKIq0rGdq3XRI/UKpWzLcdLECSpAADl88+YNZzgnp6uG8VtpwFTOijp1/vz67YBCpM5NmOGsGcp5cXHfyuv7bxN+f8sT4Zx+AicruqqaShoGVlVZa7pKHSbUVFK77szIARuIuU2ds+4A/MguwVC1EoRuBDkJBiBOXBIF2I8+Ag+TBOEBIj7EhOKIhjHYfY6N1oqcXo2+7GLZXerMjWkoQsvl0l36rmpniCSJ5fCQ50GLgHpdG7aCtX7XM4yk5m3RmELVoNuzqVqY1HH6FKpmT1trd5OOy1WFVqxBxMWoBwq+xzWLttwEFxzJUlayNtpiyR7bzJVReq5eoN4fPwpglWTZcS1VtUdrc35njqP1ZN1IdCW1WrRcnt9Zme8694YOW8mMaidKlX2hLntNwLO+4P1NUQu11B8OHOTI/qnjYQ9DbEvmT3BCQ0wDz64pxltopkSRrw+hIcTehMQ0tOj4EdS2jGCGvQoWnOaqrZhNuKjYTKKmnjlgf410qErV2sCWxT+0j4fDy1blRWkP9NXXz2B8PoxIEkXQc8lGQ5bRca0Nq7kcj1LHWtyiEJQxiQnzOfT8CEMigggmTEiYyyiPRE7klIvef6T4omuBzn/7GoTiluNBBg9JIITvQe7ZVidBkMNBHgrIWM5CLwmigAc92/e2sA+SlYesnSphGeNg6uMpG8BAxCFkPJBwIFgEGc5jzx+IPOZR1/ZbpotC2xqvd8/gWv7crcoCbJqHMt49itThm+LafLbm4pn7eFPknf9yLuujXbKFaZWbJWvl2cxm+WoXopfEa3Z3XPrbSvmv9Gcb8X+k75z4nNUzaScs2iSDHoqCntYLPZlbvckOww28n8J2s5/jsrbUrZ3SfwHQzdoVN7GbKgAAAeZJREFUOI2t1LtqFVEUBuBvz0xOvMVLEfAEMUhUtFARvIC2FnYWvoGtz+RDWFgIEkgpVtoJVl6m8JYUkmiSM9ti1ujO4UgKs2Axe63551/X2RywpLZtT2EBo8KfMUEVup9kbGGjwQOcxxw2g2CEI/gVwP3IjmIdaw3u4zS+4n0Qn8EVfMCbfbKc4HIksd6E8wWeLy0tvWrbdh538QhreBJBckGSivMOHuIe5pqIPgktQV2cu5TSds5ZSj1PziX3n0AZ1ZBhmopa2innnHqePJ1dKgIn5H/1Jg2RU0oZues6OeeBtcxqeHbQTDOFTPR9W84534SqqkqCMtOMFRzDZBZh1vdwQd/oC8W7oecDJkXwZWyLtZklVQDe4WXYP3Eb5/AFqziMXf2uLqKZRZgiky39Dj61t/lb+IRnqItsb2G+CUfay6kKgnX9ctcppd2c83f8wEaQNlHyt6goDVOe2NvwrrATqlidutAh8IBJyEPJGVXbtiP9dLvQOmzFs5uyy0FpQlci7QrzuI6z+v/7RmA2cSmwI1zVXwo74V/E2wYfcVF/QdyJj0/iOK4FsNJPc4wT8f5xYLv4dhOfG/0Ul3HI391KRRlDiUPP0gx/rR/g66brulUHIHVdG4/HmjRcIf8pXddB/g15iZ9dQeGHIgAAAABJRU5ErkJggg==",
+}
+
+_ICON_CACHE = {}
+
+try:
+    from PIL import Image, ImageTk
+    _HAVE_PIL = True
+except Exception:
+    _HAVE_PIL = False
+
+
+def tint_icon(name, color, size=18):
+    """把内嵌图标按 color 重新着色，返回 PhotoImage；没装 Pillow 则返回 None。
+
+    引用缓存在 _ICON_CACHE 里，防止被 GC 回收后图标消失。
+    """
+    if not _HAVE_PIL or not name:
+        return None
+    key = (name, color, size)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    photo = None
+    try:
+        import base64
+        import io as _io
+        im = Image.open(_io.BytesIO(base64.b64decode(ICON_B64[name])))
+        im = im.convert("RGBA").resize((size, size), Image.LANCZOS)
+        rgb = (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+        flat = Image.new("RGBA", im.size, rgb + (255,))
+        flat.putalpha(im.split()[-1])
+        photo = ImageTk.PhotoImage(flat)
+    except Exception:
+        photo = None
+    _ICON_CACHE[key] = photo
+    return photo
+
+
+def setup_mpl_cjk():
+    """给 matplotlib 指定一个中文字体。
+
+    默认字体 DejaVu Sans 不含汉字，图表里的中文（标题 / 轴标签）会渲染成
+    方框（就是看到的"乱码"）。这里按优先级挑一个系统里真实存在的 CJK 字体，
+    并关掉 unicode_minus 以免负号也变方框。失败时静默返回。
+    """
+    try:
+        import matplotlib
+        from matplotlib import font_manager
+        have = set(f.name for f in font_manager.fontManager.ttflist)
+        for cand in ("Microsoft YaHei", "Microsoft YaHei UI", "DengXian",
+                     "SimHei", "SimSun", "KaiTi", "FangSong"):
+            if cand in have:
+                cur = list(matplotlib.rcParams.get("font.sans-serif") or [])
+                matplotlib.rcParams["font.sans-serif"] = [cand] + [
+                    c for c in cur if c != cand]
+                break
+        matplotlib.rcParams["axes.unicode_minus"] = False
+        return matplotlib.rcParams["font.sans-serif"][0]
+    except Exception:
+        return ""
+
+class LeftNotebook(ttk.Frame):
+    """左侧竖排菜单 + 右侧内容区，用来替代 ttk.Notebook。
+
+    用法与 Notebook 基本兼容，只是页面要建在 nb.body 上：
+
+        nb = LeftNotebook(parent)
+        page = ttk.Frame(nb.body)
+        nb.add(page, text="xxx", icon="cil-home")
+
+    点顶部「≡」按钮（或调 toggle()）可收起 / 展开菜单，带宽度动画。
+
+    行结构 = 指示条 + 图标 Label + 文字 Label，**行高固定**。
+    收起时只对文字 Label 做 pack_forget()，图标的大小/位置和行高一律不变。
+
+    ⚠ 这里刻意不用 tk.Button：Button 在 compound="left" 且 text="" 时会把
+    -padx/-pady 一起丢掉，表现为行高从 43 塌到 20、图标被挤到最左边
+    （看起来像"图标缩小了"）；而有 text 时又必须 compound="left" 才显示文字。
+    用 Label 拼装可以同时满足"文字要显示"和"收起时只藏文字"。
+    """
+
+    def __init__(self, master, menu_width=200, collapsed=54, row_h=42, **kw):
+        ttk.Frame.__init__(self, master, **kw)
+        p = PALETTE
+        self.p = p
+        self.w_full = int(menu_width * SCALE)
+        self.w_collapsed = int(collapsed * SCALE)
+        self.row_h = int(row_h * SCALE)      # 固定行高：收起/展开完全一致
+        self.opened = True
+        self._job = None
+        self._pages = []                     # 页面 frame
+        self._rows = []                      # [row, ind, lab_i, lab_t, text, icon]
+        self.current = None
+        self.on_change = None
+
+        self.menu = tk.Frame(self, bg=p["menu_bg"], width=self.w_full,
+                             highlightthickness=0)
+        self.menu.pack(side="left", fill="y")
+        self.menu.pack_propagate(False)      # 宽度由动画控制
+
+        tk.Frame(self, bg=p["border"], width=1).pack(side="left", fill="y")
+
+        self.body = ttk.Frame(self)
+        self.body.pack(side="left", fill="both", expand=True)
+
+        self._build_top()
+
+    # ---------------------------------------------------------- 顶栏
+    def _build_top(self):
+        p = self.p
+        top = tk.Frame(self.menu, bg=p["menu_bg"], height=int(38 * SCALE))
+        top.pack(fill="x", side="top")
+        top.pack_propagate(False)
+        self.b_toggle = tk.Button(
+            top, text="\u2261", command=self.toggle,
+            bg=p["menu_bg"], fg=p["menu_fg"], relief="flat", bd=0,
+            activebackground=p["menu_hover"], activeforeground=p["accent"],
+            font=(FONT_FAMILY, int(11 * SCALE), "bold"),
+            anchor="w", padx=int(14 * SCALE), cursor="hand2")
+        self.b_toggle.pack(fill="both", expand=True)
+        tk.Frame(self.menu, bg=p["border"], height=1).pack(fill="x")
+
+    # ---------------------------------------------------------- 页面
+    def add(self, child, text="", icon=None, **kw):
+        idx = len(self._rows)
+        p = self.p
+        self._pages.append(child)
+        text = (text or "").strip()
+
+        row = tk.Frame(self.menu, bg=p["menu_bg"], height=self.row_h,
+                       cursor="hand2")
+        row.pack(fill="x")
+        row.pack_propagate(False)            # 行高不受内容影响
+
+        ind = tk.Frame(row, bg=p["menu_bg"], width=int(3 * SCALE))
+        ind.pack(side="left", fill="y")
+
+        # 图标：padx 写死，收起/展开位置完全一致
+        lab_i = tk.Label(row, bg=p["menu_bg"], bd=0, highlightthickness=0,
+                         cursor="hand2")
+        lab_i.pack(side="left", fill="y", padx=(int(10 * SCALE), 0))
+
+        # 文字：收起时整块 pack_forget，不影响图标
+        lab_t = tk.Label(row, text=" " + text, bg=p["menu_bg"],
+                         fg=p["menu_fg"], anchor="w", bd=0,
+                         highlightthickness=0, cursor="hand2",
+                         font=(FONT_FAMILY, int(10 * SCALE)))
+        lab_t.pack(side="left", fill="y", padx=(int(8 * SCALE), 0))
+
+        for wgt in (row, ind, lab_i, lab_t):
+            wgt.bind("<Button-1>", lambda e, i=idx: self.select(i))
+            wgt.bind("<Enter>", lambda e, i=idx: self._hover(i, True))
+            wgt.bind("<Leave>", lambda e, i=idx: self._hover(i, False))
+
+        self._rows.append([row, ind, lab_i, lab_t, text, icon])
+        child.pack_forget()
+        if idx == 0:
+            self.select(0)
+        self._set_text(self.opened)          # 收起态下新加的项也不显示文字
+        return idx
+
+    # ---------------------------------------------------------- 选中 / 悬停
+    def select(self, idx):
+        if not (0 <= idx < len(self._pages)):
+            return
+        p = self.p
+        for i, (row, ind, lab_i, lab_t, text, icon) in enumerate(self._rows):
+            on = (i == idx)
+            bg = p["accent_soft"] if on else p["menu_bg"]
+            img = tint_icon(icon, p["accent"] if on else p["menu_fg"])
+            row.configure(bg=bg)
+            lab_i.configure(bg=bg)
+            if img:
+                lab_i.configure(image=img)
+                lab_i.image = img            # 防 GC（_ICON_CACHE 也留了一份）
+            lab_t.configure(
+                bg=bg,
+                fg=p["accent"] if on else p["menu_fg"],
+                font=(FONT_FAMILY, int(10 * SCALE),
+                      "bold" if on else "normal"))
+            ind.configure(bg=p["accent"] if on else p["menu_bg"])
+        for i, pg in enumerate(self._pages):
+            if i == idx:
+                pg.pack(fill="both", expand=True)
+            else:
+                pg.pack_forget()
+        self.current = idx
+        if self.on_change:
+            self.on_change(idx)
+
+    def _hover(self, idx, on):
+        if not (0 <= idx < len(self._rows)) or idx == self.current:
+            return                            # 选中态保持不变
+        row, ind, lab_i, lab_t, text, icon = self._rows[idx]
+        bg = self.p["menu_hover"] if on else self.p["menu_bg"]
+        row.configure(bg=bg)
+        lab_i.configure(bg=bg)
+        lab_t.configure(bg=bg)
+
+    # ---------------------------------------------------------- 收起 / 展开
+    def toggle(self):
+        self.opened = not self.opened
+        self._set_text(self.opened)          # 只动文字 Label
+        self._animate(self.w_full if self.opened else self.w_collapsed)
+
+    def _set_text(self, show):
+        """收起 = 只把文字 Label 摘掉；图标大小/位置、行高都不变。"""
+        for row, ind, lab_i, lab_t, text, icon in self._rows:
+            mapped = bool(lab_t.winfo_ismapped())
+            if show and not mapped:
+                lab_t.pack(side="left", fill="y", padx=(int(8 * SCALE), 0))
+            elif not show and mapped:
+                lab_t.pack_forget()
+        try:
+            self.b_toggle.configure(
+                text=("\u2261  收起菜单") if show else "\u2261")
+        except Exception:
+            pass
+
+    def _animate(self, target):
+        if self._job:
+            try:
+                self.after_cancel(self._job)
+            except Exception:
+                pass
+            self._job = None
+        cur = self.menu.winfo_width() or (
+            self.w_full if self.opened else self.w_collapsed)
+        step = max(8, int(18 * SCALE))
+
+        def tick():
+            nonlocal cur
+            if cur == target:
+                self._job = None
+                return
+            cur = (min(target, cur + step) if cur < target
+                   else max(target, cur - step))
+            self.menu.configure(width=cur)
+            self._job = self.after(8, tick)
+
+        tick()
 
 
 # ------------------------------------------------------------------ 执行器
@@ -716,15 +995,41 @@ class App:
         self.pyaedt_py = tk.StringVar(value=cfg.get("python", ""))
         self.state = {}
         root.title("Maxwell 仿真批量后处理")
-        root.geometry("%dx%d" % (int(1080 * SCALE), int(800 * SCALE)))
+        root.geometry("%dx%d" % (int(1280 * SCALE), int(860 * SCALE)))
         root.minsize(int(900 * SCALE), int(640 * SCALE))
         root.resizable(True, True)
         root.configure(bg=PALETTE["bg"])
 
+        # ---------------- 顶栏（对齐 PyDracula 的 title bar）
+        _p = PALETTE
+        hdr = tk.Frame(root, bg=_p["menu_bg"], height=int(44 * SCALE))
+        hdr.pack(fill="x", side="top")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="MaxwellPost", bg=_p["menu_bg"], fg=_p["text"],
+                 font=(FONT_FAMILY, int(12 * SCALE), "bold")).pack(
+            side="left", padx=(int(16 * SCALE), 10))
+        tk.Label(hdr, text="Maxwell / PyAEDT 后处理工具", bg=_p["menu_bg"],
+                 fg=_p["accent"],
+                 font=(FONT_FAMILY, int(9 * SCALE))).pack(side="left")
+        tk.Label(hdr, text="v2.1", bg=_p["menu_bg"], fg=_p["muted"],
+                 font=(FONT_FAMILY, int(9 * SCALE))).pack(
+            side="right", padx=int(16 * SCALE))
+        tk.Frame(root, bg=_p["border"], height=1).pack(fill="x")
+
         self.runner = Runner(self.log, self.on_done, self.on_state, root=root)
 
-        # ---------------- 顶部：环境设置（PyAEDT 解释器）
-        envf = ttk.LabelFrame(root, text="环境设置", style="Card.TLabelframe", padding=6)
+        # ---------------- 标签页
+        pw_main = tk.PanedWindow(root, orient=tk.VERTICAL, sashwidth=6, sashrelief="flat",
+                            bg=PALETTE["bg"], bd=0)
+        pw_main.pack(fill="both", expand=True, padx=0, pady=0)
+        nb = LeftNotebook(pw_main)
+        pw_main.add(nb, minsize=260, stretch="always")
+
+        # ---- Tab 0: 总览 / 扫描（环境设置 + 扫描当前设计）
+        t0 = ttk.Frame(nb.body)
+        nb.add(t0, text="总览 / 扫描", icon="cil-home")
+        # ---------------- 环境设置（PyAEDT 解释器）
+        envf = ttk.LabelFrame(t0, text="环境设置", style="Card.TLabelframe", padding=6)
         envf.pack(fill="x", padx=8, pady=6)
         er = ttk.Frame(envf)
         er.pack(fill="x", padx=6, pady=4)
@@ -736,8 +1041,8 @@ class App:
         ttk.Button(er, text="保存设置", command=self._save_cfg,
                    style="Accent.TButton").pack(side="left", padx=(6, 0))
 
-        # ---------------- 顶部：扫描区
-        top = ttk.LabelFrame(root, text="当前激活的设计",
+        # ---------------- 扫描区
+        top = ttk.LabelFrame(t0, text="当前激活的设计",
                              style="Card.TLabelframe", padding=6)
         top.pack(fill="x", padx=8, pady=6)
 
@@ -774,16 +1079,99 @@ class App:
                   self.v_fpl):
             ttk.Label(r2, textvariable=v).pack(side="left", padx=(0, 16))
 
-        # ---------------- 标签页
-        pw_main = tk.PanedWindow(root, orient=tk.VERTICAL, sashwidth=6, sashrelief="flat",
-                            bg=PALETTE["bg"], bd=0)
-        pw_main.pack(fill="both", expand=True, padx=8, pady=4)
-        nb = ttk.Notebook(pw_main)
-        pw_main.add(nb, minsize=260, stretch="always")
+
+        # ---------------- 剖面 & 场计算器变量（2026-09-10 由原独立 tab 迁入，
+        #                 总览的子 tab：左 = 子 tab 导航，右 = 对应栈内容）
+        mgmt = ttk.Frame(t0)
+        mgmt.pack(fill="both", expand=True)
+        mgmt.grid_columnconfigure(2, weight=1)
+        mgmt.grid_rowconfigure(0, weight=1)
+
+        _p = PALETTE
+        subnav = tk.Frame(mgmt, bg=_p["menu_bg"], width=int(150 * SCALE),
+                          highlightthickness=0)
+        subnav.grid(row=0, column=0, sticky="ns")
+        subnav.pack_propagate(False)
+        tk.Frame(mgmt, bg=_p["border"], width=1).grid(row=0, column=1,
+                                                      sticky="ns")
+        subbody = ttk.Frame(mgmt)
+        subbody.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        self._sub_pages = []
+        self._sub_rows = []
+        self._sub_current = None
+
+        def _sub_add(text, icon):
+            idx = len(self._sub_pages)
+            pg = ttk.Frame(subbody)
+            self._sub_pages.append(pg)
+            row = tk.Frame(subnav, bg=_p["menu_bg"], height=int(38 * SCALE),
+                           cursor="hand2")
+            row.pack(fill="x")
+            row.pack_propagate(False)
+            ind = tk.Frame(row, bg=_p["menu_bg"], width=int(3 * SCALE))
+            ind.pack(side="left", fill="y")
+            lab_i = tk.Label(row, bg=_p["menu_bg"], bd=0,
+                             highlightthickness=0, cursor="hand2")
+            lab_i.pack(side="left", fill="y", padx=(int(10 * SCALE), 0))
+            lab_t = tk.Label(row, text=" " + text, bg=_p["menu_bg"],
+                             fg=_p["menu_fg"], anchor="w", bd=0,
+                             highlightthickness=0, cursor="hand2",
+                             font=(FONT_FAMILY, int(10 * SCALE)))
+            lab_t.pack(side="left", fill="y", padx=(int(8 * SCALE), 0))
+            for wgt in (row, ind, lab_i, lab_t):
+                wgt.bind("<Button-1>",
+                         lambda e, i=idx: self._sub_select(i))
+                wgt.bind("<Enter>",
+                         lambda e, i=idx: self._sub_hover(i, True))
+                wgt.bind("<Leave>",
+                         lambda e, i=idx: self._sub_hover(i, False))
+            self._sub_rows.append([row, ind, lab_i, lab_t, icon])
+            return pg
+
+        # 子 tab 0：剖面 / Sheets（原 Tab 3 迁入；删除 = 删 AEDT 片体）
+        pg_sec = _sub_add("剖面 / Sheets", "cil-layers")
+        self.sp_sec = StackPanel(pg_sec, left_title="全部 Sheets",
+                                 right_title="待删除（已入栈）",
+                                 on_change=self._sync_sec, show_cu=False)
+        self.sp_sec.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        fsec = ttk.Frame(pg_sec)
+        fsec.pack(fill="x", padx=6, pady=(0, 6))
+        self.v_secinfo = tk.StringVar(value="未扫描")
+        ttk.Label(fsec, textvariable=self.v_secinfo,
+                  style="Muted.TLabel").pack(side="left")
+        self.v_ssave = tk.BooleanVar(value=True)
+        ttk.Checkbutton(fsec, text="删除后保存工程",
+                        variable=self.v_ssave).pack(side="left", padx=12)
+        self.b_delsec = ttk.Button(fsec, text="删除选中片体",
+                                   command=self.do_delsec, state="disabled",
+                                   style="Danger.TButton")
+        self.b_delsec.pack(side="right")
+
+        # 子 tab 1：场计算器变量（原 Tab 4 迁入，行为不变）
+        pg_expr = _sub_add("场计算器变量", "cil-code")
+        self.sp_expr = StackPanel(
+            pg_expr, left_title="全部变量", right_title="待删除（已入栈）",
+            on_change=self._sync_expr, show_cu=False,
+            prefix_values=["OhmicLoss_", "I_sec_"])
+        self.sp_expr.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        f4 = ttk.Frame(pg_expr)
+        f4.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Label(f4, text="⚠ 只删表达式，不动几何与网格；"
+                           "被报表引用的变量删掉后该报表取不到数",
+                  style="Muted.TLabel").pack(side="left")
+        self.v_dsave = tk.BooleanVar(value=True)
+        ttk.Checkbutton(f4, text="删除后保存工程",
+                        variable=self.v_dsave).pack(side="left", padx=12)
+        self.b_del = ttk.Button(f4, text="删除选中变量",
+                                command=self.do_dropvars, state="disabled",
+                                style="Danger.TButton")
+        self.b_del.pack(side="right")
+
+        self._sub_select(0)
 
         # ---- Tab 1: OhmicLoss
-        t1 = ttk.Frame(nb)
-        nb.add(t1, text="  Ohmic Loss 积分  ")
+        t1 = ttk.Frame(nb.body)
+        nb.add(t1, text="  Ohmic Loss 积分  ", icon="cil-battery-alert")
         self.sp_ohm = StackPanel(t1, left_title="候选实体",
                                  right_title="已入栈（待积分）",
                                  on_change=self._sync_ohm)
@@ -804,8 +1192,8 @@ class App:
 
         # ---- Tab 2: 电流积分
         # 损耗柱状图（前提：Ohmic Loss 积分 tab 已创建 OhmicLoss_<实体> 表达式）
-        t8 = ttk.Frame(nb)
-        nb.add(t8, text="  损耗柱状图  ")
+        t8 = ttk.Frame(nb.body)
+        nb.add(t8, text="  损耗柱状图  ", icon="cil-chart-line")
         self.sp_bar = StackPanel(t8, left_title="候选实体",
                                  right_title="已入栈（待对比）",
                                  on_change=self._sync_bar)
@@ -840,9 +1228,15 @@ class App:
         self._bar_fig = None
         self._bar_sweep = "?"
         self._bar_freq = None
+        self.cur_data = None          # (labels, rms, peak, proj, dsn, setup)
+        self._curwin = None
+        self._cur_fig = None
+        self._curbar_pending = False  # 电流柱状图：等扫描刷新后决定
+        self._curbar_objs = []        # 电流柱状图：本次入栈实体
+        self._curbar_items = []       # 电流柱状图：已就绪 label:sheet:scalar
 
-        t2 = ttk.Frame(nb)
-        nb.add(t2, text="  电流积分  ")
+        t2 = ttk.Frame(nb.body)
+        nb.add(t2, text="  电流积分  ", icon="cil-input-power")
         self.sp_cur = StackPanel(t2, left_title="候选实体",
                                  right_title="已入栈（待剖面积分）",
                                  on_change=self._sync_cur)
@@ -866,64 +1260,51 @@ class App:
             side="left", padx=10)
         ttk.Checkbutton(f3, text="保存前备份 .aedt",
                         variable=self.v_cbackup).pack(side="left")
-        self.b_cur = ttk.Button(f3, text="执行电流积分",
+        # 右侧按钮组：左 = IvsPhase图像（原「执行电流积分」，功能不变）；
+        #              右 = 电流柱状图（场计算器 CmplxMag 取峰值，
+        #                   有效值 = 峰值/√2，不建 Maxwell 报表）
+        _curbtns = ttk.Frame(f3)
+        _curbtns.pack(side="right")
+        self.b_cur = ttk.Button(_curbtns, text="IvsPhase图像",
                                 command=self.do_current, state="disabled",
                                 style="Accent.TButton")
-        self.b_cur.pack(side="right")
-
-        # ---- Tab 3: 剖面清单
-        t3 = ttk.Frame(nb)
-        nb.add(t3, text="  剖面 / Sheets  ")
-        head = ttk.Frame(t3)
-        head.pack(fill="x", padx=6, pady=4)
-        self.v_secinfo = tk.StringVar(value="未扫描")
-        ttk.Label(head, textvariable=self.v_secinfo).pack(side="left")
-        sb = ttk.Scrollbar(t3)
-        sb.pack(side="right", fill="y")
-        self.secbox = tk.Listbox(t3, yscrollcommand=sb.set, height=18,
-                                 **listbox_kw())
-        self.secbox.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        sb.configure(command=self.secbox.yview)
-
-        # ---- Tab 4: 场计算器变量
-        t4 = ttk.Frame(nb)
-        nb.add(t4, text="  场计算器变量  ")
-        self.sp_expr = StackPanel(
-            t4, left_title="全部变量", right_title="待删除（已入栈）",
-            on_change=self._sync_expr, show_cu=False,
-            prefix_values=["OhmicLoss_", "I_sec_"])
-        self.sp_expr.pack(fill="both", expand=True, padx=6, pady=6)
-        f4 = ttk.Frame(t4)
-        f4.pack(fill="x", padx=6, pady=(0, 8))
-        ttk.Label(f4, text="⚠ 只删表达式，不动几何与网格；被报表引用的变量删掉后该报表取不到数",
-                  style="Muted.TLabel").pack(side="left")
-        self.v_dsave = tk.BooleanVar(value=True)
-        ttk.Checkbutton(f4, text="删除后保存工程",
-                        variable=self.v_dsave).pack(side="left", padx=12)
-        self.b_del = ttk.Button(f4, text="删除选中变量",
-                                command=self.do_dropvars, state="disabled",
-                                style="Danger.TButton")
-        self.b_del.pack(side="right")
+        self.b_cur.pack(side="left")
+        self.b_curbar = ttk.Button(_curbtns, text="电流柱状图",
+                                   command=self.do_curbar, state="disabled",
+                                   style="Accent.TButton")
+        self.b_curbar.pack(side="left", padx=(6, 0))
 
         # ---- Tab 5: 体积排序 / 匹配
-        t5 = ttk.Frame(nb)
-        nb.add(t5, text="  体积排序 / 匹配  ")
+        t5 = ttk.Frame(nb.body)
+        nb.add(t5, text="  体积排序 / 匹配  ", icon="cil-equalizer")
 
-        pw5 = tk.PanedWindow(t5, orient=tk.VERTICAL, sashwidth=6, sashrelief="flat",
-                            bg=PALETTE["bg"], bd=0)
+
+        # 三列并排（原来是上下三行；改列后每列更窄，内部控件按窄列重排）
+        pw5 = ttk.Frame(t5)
         pw5.pack(fill="both", expand=True)
-        vtop = ttk.LabelFrame(pw5, text="copper 按体积排序（同步重排候选池）",
+        # grid + uniform -> 三列严格等宽。经典 PanedWindow 没有 ttk 的 -weight，
+        # 多余宽度会全给最后一列（308/318/441）；而 root.bind("<Configure>")
+        # 因 bindtags 会收到整棵控件树的事件，拿它去 paneconfigure 会打成事件风暴。
+        pw5.grid_columnconfigure((0, 1, 2), weight=1, uniform="vcol")
+        pw5.grid_rowconfigure(0, weight=1)
+
+        # ---------------- 第 1 列: copper 按体积排序 ----------------
+        vtop = ttk.LabelFrame(pw5, text="copper 按体积排序",
                               style="Card.TLabelframe", padding=6)
-        pw5.add(vtop, minsize=130, stretch="always")
+        vtop.grid(row=0, column=0, sticky="nsew", padx=3)
+        vr = ttk.Frame(vtop)
+        vr.pack(fill="x")
         self.v_sort = tk.StringVar(value="默认")
         for _txt, _val in (("默认", "默认"), ("升序（小→大）", "升序"),
                            ("降序（大→小）", "降序")):
-            ttk.Radiobutton(vtop, text=_txt, value=_val,
+            ttk.Radiobutton(vr, text=_txt, value=_val,
                             variable=self.v_sort,
                             command=self._on_sort_changed).pack(side="left",
-                                                                padx=6)
-        ttk.Label(vtop, text="体积在扫描时读取（GetObjectVolume，模型单位³）",
-                  style="Muted.TLabel").pack(side="left", padx=14)
+                                                                padx=4)
+        ttk.Label(vtop, text="同步重排各 tab 候选池；体积在扫描时读取"
+                             "（GetObjectVolume，模型单位³）",
+                  style="Muted.TLabel", wraplength=240,
+                  justify="left").pack(anchor="w", padx=2, pady=(4, 0))
         vmid = ttk.Frame(vtop)
         vmid.pack(fill="both", expand=True, pady=(4, 0))
         self.volbox = tk.Listbox(vmid, height=7, **listbox_kw())
@@ -933,44 +1314,52 @@ class App:
         _vsb.pack(side="left", fill="y")
         self.v_volinfo = tk.StringVar(value="未扫描")
         ttk.Label(vtop, textvariable=self.v_volinfo,
-                  style="Muted.TLabel").pack(anchor="w", padx=2, pady=(2, 0))
+                  style="Muted.TLabel", wraplength=240,
+                  justify="left").pack(anchor="w", padx=2, pady=(2, 0))
 
-        vmatch = ttk.LabelFrame(pw5, text="匹配筛选（与指定实体偏差 ≤ 容差；条件可独立勾选）",
+        # ---------------- 第 2 列: 匹配筛选 ----------------
+        vmatch = ttk.LabelFrame(pw5, text="匹配筛选（偏差 ≤ 容差）",
                                 style="Card.TLabelframe", padding=6)
-        pw5.add(vmatch, minsize=130, stretch="always")
+        vmatch.grid(row=0, column=1, sticky="nsew", padx=3)
         mr = ttk.Frame(vmatch)
-        mr.pack(fill="x", padx=4)
+        mr.pack(fill="x", padx=2)
         ttk.Label(mr, text="参考实体:").pack(side="left")
-        self.cb_ref = ttk.Combobox(mr, width=26)
-        self.cb_ref.pack(side="left", padx=6)
-        ttk.Label(mr, text="容差 ±").pack(side="left")
+        self.cb_ref = ttk.Combobox(mr, width=16)
+        self.cb_ref.pack(side="left", padx=4)
+        mr1b = ttk.Frame(vmatch)
+        mr1b.pack(fill="x", padx=2, pady=(4, 0))
+        ttk.Label(mr1b, text="容差 ±").pack(side="left")
         self.v_tol = tk.StringVar(value="5")
-        ttk.Entry(mr, textvariable=self.v_tol, width=6).pack(side="left",
-                                                             padx=4)
-        ttk.Label(mr, text="%").pack(side="left")
+        ttk.Entry(mr1b, textvariable=self.v_tol, width=6).pack(side="left",
+                                                               padx=4)
+        ttk.Label(mr1b, text="%").pack(side="left")
         self.v_matchvol = tk.BooleanVar(value=True)
-        ttk.Checkbutton(mr, text="按体积",
-                        variable=self.v_matchvol).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(mr1b, text="按体积",
+                        variable=self.v_matchvol).pack(side="left",
+                                                       padx=(10, 0))
         self.v_matchxy = tk.BooleanVar(value=False)
-        ttk.Checkbutton(mr, text="按 X/Y 坐标（默认不勾）",
-                        variable=self.v_matchxy).pack(side="left", padx=12)
+        ttk.Checkbutton(mr1b, text="按 X/Y 坐标",
+                        variable=self.v_matchxy).pack(side="left", padx=8)
         mr2 = ttk.Frame(vmatch)
-        mr2.pack(fill="x", padx=4, pady=(4, 0))
+        mr2.pack(fill="x", padx=2, pady=(4, 0))
         ttk.Button(mr2, text="筛选匹配实体", command=self._do_match,
                    style="Accent.TButton").pack(side="left")
-        ttk.Label(mr2, text="排序:").pack(side="left", padx=(14, 2))
-        self.cb_msort = ttk.Combobox(mr2, width=13, state="readonly",
+        mr2b = ttk.Frame(vmatch)
+        mr2b.pack(fill="x", padx=2, pady=(4, 0))
+        ttk.Label(mr2b, text="排序:").pack(side="left")
+        self.cb_msort = ttk.Combobox(mr2b, width=10, state="readonly",
                                      values=["偏差（默认）", "体积", "Z 坐标"])
         self.cb_msort.current(0)
-        self.cb_msort.pack(side="left")
-        ttk.Label(mr2, text="方向:").pack(side="left", padx=(10, 2))
-        self.cb_mdir = ttk.Combobox(mr2, width=6, state="readonly",
+        self.cb_msort.pack(side="left", padx=2)
+        ttk.Label(mr2b, text="方向:").pack(side="left", padx=(8, 2))
+        self.cb_mdir = ttk.Combobox(mr2b, width=5, state="readonly",
                                     values=["正序", "逆序"])
         self.cb_mdir.current(0)
         self.cb_mdir.pack(side="left")
         self.v_matchinfo = tk.StringVar(value="")
-        ttk.Label(mr2, textvariable=self.v_matchinfo,
-                  style="Muted.TLabel").pack(side="left", padx=12)
+        ttk.Label(vmatch, textvariable=self.v_matchinfo,
+                  style="Muted.TLabel", wraplength=240,
+                  justify="left").pack(anchor="w", padx=2, pady=(4, 0))
         mmid = ttk.Frame(vmatch)
         mmid.pack(fill="both", expand=True, pady=(4, 0))
         self.matchbox = tk.Listbox(mmid, height=7, **listbox_kw())
@@ -979,51 +1368,46 @@ class App:
         self.matchbox.pack(side="left", fill="both", expand=True)
         _msb.pack(side="left", fill="y")
         mmid2 = ttk.Frame(vmatch)
-        mmid2.pack(fill="x", padx=4, pady=(4, 0))
-        ttk.Label(mmid2, text="匹配结果全部入栈到:").pack(side="left")
-        self.cb_mtarget = ttk.Combobox(mmid2, width=16, state="readonly",
+        mmid2.pack(fill="x", padx=2, pady=(4, 0))
+        ttk.Label(mmid2, text="全部入栈到:").pack(side="left")
+        self.cb_mtarget = ttk.Combobox(mmid2, width=13, state="readonly",
                                        values=["温度赋值", "Ohmic Loss 积分",
                                                "电流积分", "电流密度场图",
                                                "损耗柱状图"])
         self.cb_mtarget.current(0)
-        self.cb_mtarget.pack(side="left", padx=6)
+        self.cb_mtarget.pack(side="left", padx=4)
         ttk.Button(mmid2, text="入栈", command=self._do_mpush).pack(
             side="left")
 
-        zfilt = ttk.LabelFrame(
-            pw5, text="Z 坐标筛选（bbox 中心 z，模型单位；两阈值可同时填=区间）",
+        # ---------------- 第 3 列: Z 坐标筛选 ----------------
+        zfilt = ttk.LabelFrame(pw5, text="Z 坐标筛选（bbox 中心 z）",
                                style="Card.TLabelframe", padding=6)
-        pw5.add(zfilt, minsize=110, stretch="always")
+        zfilt.grid(row=0, column=2, sticky="nsew", padx=3)
+
         zr = ttk.Frame(zfilt)
-        zr.pack(fill="x", padx=4)
+        zr.pack(fill="x", padx=2)
         ttk.Label(zr, text="z ≥").pack(side="left", padx=(2, 2))
         self.v_zlo = tk.StringVar(value="")
         ttk.Entry(zr, textvariable=self.v_zlo, width=8).pack(side="left",
                                                              padx=2)
-        ttk.Label(zr, text="z ≤").pack(side="left", padx=(10, 2))
+        ttk.Label(zr, text="z ≤").pack(side="left", padx=(8, 2))
         self.v_zhi = tk.StringVar(value="")
         ttk.Entry(zr, textvariable=self.v_zhi, width=8).pack(side="left",
                                                              padx=2)
-        ttk.Label(zr, text="（留空=该边不限）",
-                  style="Muted.TLabel").pack(side="left", padx=2)
+        ttk.Label(zr, text="（留空=该边不限，两阈值可同时填=区间）",
+                  style="Muted.TLabel", wraplength=200,
+                  justify="left").pack(side="left", padx=4)
+        zr1b = ttk.Frame(zfilt)
+        zr1b.pack(fill="x", padx=2, pady=(4, 0))
         self.v_znovia = tk.BooleanVar(value=True)
-        ttk.Checkbutton(zr, text="排除名字含 via",
-                        variable=self.v_znovia).pack(side="left", padx=10)
-        ttk.Button(zr, text="筛选实体", command=self._do_zfilter,
-                   style="Accent.TButton").pack(side="left", padx=10)
+        ttk.Checkbutton(zr1b, text="排除名字含 via",
+                        variable=self.v_znovia).pack(side="left")
+        ttk.Button(zr1b, text="筛选实体", command=self._do_zfilter,
+                   style="Accent.TButton").pack(side="left", padx=8)
         self.v_zinfo = tk.StringVar(value="")
-        ttk.Label(zr, textvariable=self.v_zinfo,
-                  style="Muted.TLabel").pack(side="left", padx=8)
-        zr2 = ttk.Frame(zfilt)
-        zr2.pack(fill="x", padx=4, pady=(4, 0))
-        ttk.Label(zr2, text="筛选结果全部入栈到:").pack(side="left")
-        self.cb_ztarget = ttk.Combobox(zr2, width=16, state="readonly",
-                                       values=["温度赋值", "Ohmic Loss 积分",
-                                               "电流积分", "电流密度场图",
-                                               "损耗柱状图"])
-        self.cb_ztarget.current(0)
-        self.cb_ztarget.pack(side="left", padx=6)
-        ttk.Button(zr2, text="入栈", command=self._do_zpush).pack(side="left")
+        ttk.Label(zfilt, textvariable=self.v_zinfo,
+                  style="Muted.TLabel", wraplength=240,
+                  justify="left").pack(anchor="w", padx=2, pady=(4, 0))
         zmid = ttk.Frame(zfilt)
         zmid.pack(fill="both", expand=True, pady=(4, 0))
         self.zbox = tk.Listbox(zmid, height=5, **listbox_kw())
@@ -1033,9 +1417,21 @@ class App:
         self.zbox.pack(side="left", fill="both", expand=True)
         _zsb.pack(side="right", fill="y")
 
+        zr2 = ttk.Frame(zfilt)
+        zr2.pack(fill="x", padx=2, pady=(4, 0))
+        ttk.Label(zr2, text="全部入栈到:").pack(side="left")
+        self.cb_ztarget = ttk.Combobox(zr2, width=13, state="readonly",
+                                       values=["温度赋值", "Ohmic Loss 积分",
+                                               "电流积分", "电流密度场图",
+                                               "损耗柱状图"])
+        self.cb_ztarget.current(0)
+        self.cb_ztarget.pack(side="left", padx=4)
+        ttk.Button(zr2, text="入栈", command=self._do_zpush).pack(side="left")
+
+
         # ---- Tab 6: 电流密度场图
-        t6 = ttk.Frame(nb)
-        nb.add(t6, text="  电流密度场图  ")
+        t6 = ttk.Frame(nb.body)
+        nb.add(t6, text="  电流密度场图  ", icon="cil-signal-cellular-3")
         self.sp_j = StackPanel(t6, left_title="候选实体",
                                right_title="已入栈（待建 J 场图）",
                                on_change=self._sync_j)
@@ -1068,8 +1464,8 @@ class App:
         self.b_j.pack(side="right")
 
         # ---- Tab 7: 温度赋值
-        t7 = ttk.Frame(nb)
-        nb.add(t7, text="  温度赋值  ")
+        t7 = ttk.Frame(nb.body)
+        nb.add(t7, text="  温度赋值  ", icon="cil-mug-tea")
         pw7 = tk.PanedWindow(t7, orient=tk.VERTICAL, sashwidth=6, sashrelief="flat",
                             bg=PALETTE["bg"], bd=0)
         pw7.pack(fill="both", expand=True)
@@ -1128,8 +1524,8 @@ class App:
 
         # ---- Tab 9: matrix等效 (电感矩阵 -> 端口矩阵 -> T 型等效)
         # 纯 numpy 本地计算, 不走 Runner / 不碰 AEDT
-        t9 = ttk.Frame(nb)
-        nb.add(t9, text="  matrix等效  ")
+        t9 = ttk.Frame(nb.body)
+        nb.add(t9, text="  matrix等效  ", icon="cil-view-quilt")
         if _icc is None:
             _mxhint = ("!! 未找到 indcalc_core / numpy —— 计算不可用。"
                        "请把 indcalc_core.py 放到 GUI 同目录, 或设置环境变量 "
@@ -1137,13 +1533,10 @@ class App:
                        "并确认当前 Python 已装 numpy。")
             ttk.Label(t9, text=_mxhint,
                       foreground=PALETTE["danger"]).pack(fill="x", padx=6, pady=4)
-        # 上下可拖: 输入区 (矩阵/端口/计算行) vs 结果区
-        pw9 = tk.PanedWindow(t9, orient=tk.VERTICAL, sashwidth=6, sashrelief="flat",
-                            bg=PALETTE["bg"], bd=0)
-        pw9.pack(fill="both", expand=True)
-        top9 = tk.PanedWindow(pw9, orient=tk.VERTICAL, sashwidth=6,
+        # 结果已移到二级独立窗口，这里只保留输入区（矩阵 / 端口 / 计算行）
+        top9 = tk.PanedWindow(t9, orient=tk.VERTICAL, sashwidth=6,
                               sashrelief="flat", bg=PALETTE["bg"], bd=0)
-        pw9.add(top9, minsize=190, height=300, stretch="always")
+        top9.pack(fill="both", expand=True)
         f9a = ttk.LabelFrame(top9, text='① Maxwell 电感矩阵 ("电阻, 电感" 双值或单值电感;'
                                       ' 导入 txt/tab/csv 或直接粘贴)',
                              style="Card.TLabelframe", padding=4)
@@ -1235,42 +1628,15 @@ class App:
         self.b_mx = ttk.Button(f9c, text="计算端口矩阵 + T 型等效",
                                command=self.do_mx_compute, style="Accent.TButton")
         self.b_mx.pack(side="right")
+        ttk.Button(f9c, text="打开结果窗口…",
+                   command=self._mx_open_result).pack(side="right",
+                                                      padx=(8, 0))
 
-        f9d = ttk.LabelFrame(pw9, text="④ 结果 (左: 端口矩阵  右: T 型等效)",
-                             style="Card.TLabelframe", padding=4)
-        pw9.add(f9d, minsize=150, height=300, stretch="always")
-        res9 = tk.PanedWindow(f9d, orient=tk.HORIZONTAL, sashwidth=6, sashrelief="flat",
-                            bg=PALETTE["bg"], bd=0)
-        res9.pack(fill="both", expand=True)
-        colL = tk.PanedWindow(res9, orient=tk.VERTICAL, sashwidth=6,
-                              sashrelief="flat", bg=PALETTE["bg"], bd=0)
-        res9.add(colL, minsize=200, stretch="always")
-        colR = ttk.Frame(res9)
-        res9.add(colR, minsize=200, stretch="always")
-        gL = ttk.Frame(colL)
-        ttk.Label(gL, text="端口电感矩阵:").pack(anchor="w")
-        self.tv_mxL = ttk.Treeview(gL, show="headings", height=4)
-        self.tv_mxL.pack(fill="both", expand=True)
-        colL.add(gL, minsize=70, stretch="always")
-        gR = ttk.Frame(colL)
-        ttk.Label(gR, text="端口电阻矩阵:").pack(anchor="w", pady=(4, 0))
-        self.tv_mxR = ttk.Treeview(gR, show="headings", height=4)
-        self.tv_mxR.pack(fill="both", expand=True)
-        colL.add(gR, minsize=70, stretch="always")
-        trow9 = ttk.Frame(colR)
-        trow9.pack(fill="x")
-        ttk.Label(trow9, text="T 型等效  原边:").pack(side="left")
-        self.cb_mxprim = ttk.Combobox(trow9, textvariable=self.mx_tprim,
-                                      width=10, state="readonly")
-        self.cb_mxprim.pack(side="left", padx=4)
-        ttk.Label(trow9, text="副边:").pack(side="left", padx=(6, 0))
-        self.cb_mxsec = ttk.Combobox(trow9, textvariable=self.mx_tsec,
-                                     width=10, state="readonly")
-        self.cb_mxsec.pack(side="left", padx=4)
-        ttk.Button(trow9, text="计算 T 型",
-                   command=self.do_mx_t).pack(side="left", padx=6)
-        self.tv_mxT = ttk.Treeview(colR, show="headings", height=8)
-        self.tv_mxT.pack(fill="both", expand=True, pady=(4, 0))
+        # ④ 结果 (端口电感 / 端口电阻 / T 型等效) -> 二级独立窗口,
+        #    控件在第一次点【打开结果窗口…】时才创建, 这里先置空。
+        self._mx_reswin = None
+        self.tv_mxL = self.tv_mxR = self.tv_mxT = None
+        self.cb_mxprim = self.cb_mxsec = None
 
         # 单位改变 -> 自动重渲染 (仅对"从结果目录读入"的矩阵, 手填矩阵不覆盖)
         self.mx_ru_in.trace_add("write", self._mx_on_unit_change)
@@ -1282,7 +1648,8 @@ class App:
         # ---------------- 日志
         lf = ttk.LabelFrame(pw_main, text="日志",
                             style="Card.TLabelframe", padding=4)
-        pw_main.add(lf, minsize=80, height=185, stretch="never")
+        pw_main.add(lf, minsize=80, height=185, stretch="never",
+                   padx=6, pady=6)
         _tkw = text_kw()
         _tkw["font"] = ("Consolas", 9)
         self.txt = scrolledtext.ScrolledText(lf, height=12, wrap="none",
@@ -1900,13 +2267,7 @@ class App:
         """输出单位改变: 重绘端口矩阵表 + T 型参数表 (不重算)。"""
         if getattr(self, "mx_Lp", None) is None:
             return
-        self._mx_fill(self.tv_mxL, self.mx_Lp, self.mx_lu_out.get(),
-                      dict(_icc.L_UNITS).get(self.mx_lu_out.get(), 1e-6))
-        if getattr(self, "mx_Rp", None) is not None:
-            self._mx_fill(self.tv_mxR, self.mx_Rp, self.mx_ru_out.get(),
-                          dict(_icc.R_UNITS).get(self.mx_ru_out.get(), 1e-3))
-        if self.mx_tprim.get() and self.mx_tsec.get():
-            self.do_mx_t()
+        self._mx_render_results()   # 结果窗口没打开时什么都不做
 
     def do_mx_compute(self):
         """主计算: 矩阵解析 -> 端口定义解析 -> 端口矩阵 (L/R) -> T 型等效。"""
@@ -1941,27 +2302,127 @@ class App:
         self.mx_Lp, self.mx_Rp = Lp, Rp
         self.mx_pnames = [p["name"] for p in ports]
         self.mx_st2.set("端口: %d 个 / %d 段" % (info["M"], info["K"]))
-        self._mx_fill(self.tv_mxL, Lp, self.mx_lu_out.get(),
+        self.mx_Lp, self.mx_Rp = Lp, Rp
+        self.mx_pnames = [p["name"] for p in ports]
+        self.mx_st2.set("端口: %d 个 / %d 段" % (info["M"], info["K"]))
+        unused = ", ".join(info.get("unused_layers", []))
+        self.log("matrix等效: 端口矩阵 OK — %d 端口 / %d 段%s"
+                  % (info["M"], info["K"],
+                     ("；开路未用层: " + unused) if unused else ""), "ok")
+        # 结果填进二级窗口；算完自动弹出，窗口没开过也不会出错
+        self._mx_render_results(auto_open=True)
+
+
+    # -------------------------------------------- 结果二级窗口
+    def _mx_results_ready(self):
+        """结果窗口里的控件是否已创建（窗口可能一次都没打开过）。"""
+        tv = getattr(self, "tv_mxL", None)
+        # winfo_exists() 返回 0/1(int) —— 显式转 bool, 免得调用方 is True 判断失败
+        return tv is not None and bool(tv.winfo_exists())
+
+    def _mx_open_result(self):
+        """打开（或唤醒）结果窗口：端口电感 / 端口电阻 / T 型等效 各占一页。
+
+        控件是按需创建的 —— Tab 里只放一个【打开结果窗口…】按钮，没点开就
+        不建控件。计算完再打开也能看到完整结果，因为数据存在
+        self.mx_Lp / mx_Rp / mx_pnames 上，打开时会补渲染一次。
+        """
+        win = getattr(self, "_mx_reswin", None)
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            self._mx_render_results()
+            return win
+
+        win = tk.Toplevel(self.root)
+        self._mx_reswin = win
+        win.title("matrix 等效 — 结果")
+        win.geometry("920x620")
+        win.minsize(560, 380)
+        win.configure(bg=PALETTE["bg"])
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=6, pady=(6, 0))
+        self._mx_resnb = nb
+
+        def _mk_page(title, height):
+            """建一页: 标题 + Treeview + 竖向滚动条, 返回 (frame, treeview)。"""
+            fr = ttk.Frame(nb, padding=6)
+            nb.add(fr, text=title)
+            tv = ttk.Treeview(fr, show="headings", height=height)
+            sb = ttk.Scrollbar(fr, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            tv.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+            return fr, tv
+
+        _, self.tv_mxL = _mk_page("端口电感矩阵", 14)
+        _, self.tv_mxR = _mk_page("端口电阻矩阵", 14)
+
+        # ---- T 型等效页: 原/副边选择 + 计算 + 参数表
+        pT = ttk.Frame(nb, padding=6)
+        nb.add(pT, text="T 型等效")
+        trow = ttk.Frame(pT)
+        trow.pack(fill="x")
+        ttk.Label(trow, text="原边:").pack(side="left")
+        self.cb_mxprim = ttk.Combobox(trow, textvariable=self.mx_tprim,
+                                      width=12, state="readonly")
+        self.cb_mxprim.pack(side="left", padx=4)
+        ttk.Label(trow, text="副边:").pack(side="left", padx=(10, 0))
+        self.cb_mxsec = ttk.Combobox(trow, textvariable=self.mx_tsec,
+                                     width=12, state="readonly")
+        self.cb_mxsec.pack(side="left", padx=4)
+        ttk.Button(trow, text="计算 T 型",
+                   command=self.do_mx_t).pack(side="left", padx=8)
+        ttk.Label(trow, text="原边/副边 = 端口名，匝比按 Np/Ns",
+                  style="Muted.TLabel").pack(side="left", padx=8)
+        tvT = ttk.Treeview(pT, show="headings", height=12)
+        sbT = ttk.Scrollbar(pT, orient="vertical", command=tvT.yview)
+        tvT.configure(yscrollcommand=sbT.set)
+        tvT.pack(side="left", fill="both", expand=True, pady=(6, 0))
+        sbT.pack(side="right", fill="y", pady=(6, 0))
+        self.tv_mxT = tvT
+
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=6, pady=6)
+        ttk.Button(bar, text="导出 CSV…",
+                   command=self.do_mx_export).pack(side="left")
+        ttk.Button(bar, text="关闭", command=win.destroy).pack(side="right")
+
+        self._mx_render_results()     # 之前算过就立刻补上
+        return win
+
+    def _mx_render_results(self, auto_open=False):
+        """把已算好的端口矩阵 / T 型参数填进结果窗口。
+
+        auto_open=True 时先打开窗口（计算完成后自动弹出）；窗口没打开则
+        什么都不做，数据留着等下次打开再渲染。
+        """
+        if auto_open:
+            self._mx_open_result()
+            return
+        if not self._mx_results_ready():
+            return
+        if getattr(self, "mx_Lp", None) is None:
+            return
+        self._mx_fill(self.tv_mxL, self.mx_Lp, self.mx_lu_out.get(),
                       dict(_icc.L_UNITS).get(self.mx_lu_out.get(), 1e-6))
-        if Rp is not None:
-            self._mx_fill(self.tv_mxR, Rp, self.mx_ru_out.get(),
+        if getattr(self, "mx_Rp", None) is not None:
+            self._mx_fill(self.tv_mxR, self.mx_Rp, self.mx_ru_out.get(),
                           dict(_icc.R_UNITS).get(self.mx_ru_out.get(), 1e-3))
         else:
             self._mx_clear(self.tv_mxR)
-        vals = self.mx_pnames
+        vals = list(self.mx_pnames)
         self.cb_mxprim["values"] = vals
         self.cb_mxsec["values"] = vals
-        if self.mx_tprim.get() not in vals:
+        if vals and self.mx_tprim.get() not in vals:
             self.mx_tprim.set(vals[0])
         if len(vals) >= 2:
-            if self.mx_tsec.get() not in vals or self.mx_tsec.get() == self.mx_tprim.get():
+            if (self.mx_tsec.get() not in vals
+                    or self.mx_tsec.get() == self.mx_tprim.get()):
                 self.mx_tsec.set(vals[1])
-        else:
+        elif len(vals) == 1:
             self.mx_tsec.set("")
-        unused = ", ".join(info.get("unused_layers", []))
-        self.log("matrix等效: 端口矩阵 OK — %d 端口 / %d 段%s"
-                 % (info["M"], info["K"],
-                    ("；开路未用层: " + unused) if unused else ""), "ok")
         self.do_mx_t()
 
     def _mx_fill(self, tv, M, unit, scale):
@@ -1988,6 +2449,8 @@ class App:
         """按当前原/副边选择计算两绕组 T 型等效并填表。"""
         if _icc is None or getattr(self, "mx_Lp", None) is None:
             return
+        if not self._mx_results_ready():
+            return                       # 结果窗口还没打开过
         prim, sec = self.mx_tprim.get(), self.mx_tsec.get()
         if not prim or not sec or prim == sec:
             self.tv_mxT.delete(*self.tv_mxT.get_children())
@@ -2066,8 +2529,14 @@ class App:
                              ("normal" if self.sp_ohm.rbox.size() else "disabled"))
         self.b_cur.configure(state="disabled" if running else
                              ("normal" if self.sp_cur.rbox.size() else "disabled"))
+        self.b_curbar.configure(state="disabled" if running else
+                                ("normal" if self.sp_cur.rbox.size()
+                                 else "disabled"))
         self.b_del.configure(state="disabled" if running else
                              ("normal" if self.sp_expr.rbox.size() else "disabled"))
+        self.b_delsec.configure(state="disabled" if running else
+                                ("normal" if self.sp_sec.rbox.size()
+                                 else "disabled"))
         self.b_j.configure(state="disabled" if running else
                             ("normal" if self.sp_j.rbox.size() else "disabled"))
         self.b_temp.configure(state="disabled" if running else
@@ -2080,6 +2549,67 @@ class App:
         if not self.runner.running:
             self.b_del.configure(state="normal" if self.sp_expr.rbox.size()
                                  else "disabled")
+
+    # ---------------------------------- 总览子 tab（剖面 / 场计算器变量）
+    def _sub_select(self, idx):
+        _p = PALETTE
+        for i, (row, ind, lab_i, lab_t, icon) in enumerate(self._sub_rows):
+            on = (i == idx)
+            bg = _p["accent_soft"] if on else _p["menu_bg"]
+            img = tint_icon(icon, _p["accent"] if on else _p["menu_fg"])
+            row.configure(bg=bg)
+            lab_i.configure(bg=bg)
+            if img:
+                lab_i.configure(image=img)
+                lab_i.image = img          # 防 GC
+            lab_t.configure(bg=bg,
+                            fg=_p["accent"] if on else _p["menu_fg"],
+                            font=(FONT_FAMILY, int(10 * SCALE),
+                                  "bold" if on else "normal"))
+            ind.configure(bg=_p["accent"] if on else _p["menu_bg"])
+        for i, pg in enumerate(self._sub_pages):
+            if i == idx:
+                pg.pack(fill="both", expand=True)
+            else:
+                pg.pack_forget()
+        self._sub_current = idx
+
+    def _sub_hover(self, idx, on):
+        if idx == self._sub_current or not (0 <= idx < len(self._sub_rows)):
+            return
+        row, ind, lab_i, lab_t, icon = self._sub_rows[idx]
+        bg = PALETTE["menu_hover"] if on else PALETTE["menu_bg"]
+        row.configure(bg=bg)
+        lab_i.configure(bg=bg)
+        lab_t.configure(bg=bg)
+
+    def _sync_sec(self):
+        if not self.runner.running:
+            self.b_delsec.configure(
+                state="normal" if self.sp_sec.rbox.size() else "disabled")
+
+    def do_delsec(self):
+        names = list(self.sp_sec.stack)
+        if not names:
+            messagebox.showinfo("提示", "先把要删除的片体入栈")
+            return
+        if not messagebox.askyesno(
+                "确认删除片体",
+                "将从设计删除以下 %d 个片体：\n\n%s\n\n"
+                "设计：%s / %s\n\n"
+                "⚠ 只删片体（Sheets / Non-model 剖面），不动 Solids、不动网格；\n"
+                "被场图/报表引用的剖面删掉后对应结果取不到数。"
+                % (len(names),
+                   "\n".join(names[:15]) + ("\n…" if len(names) > 15 else ""),
+                   self.state.get("project", "?"),
+                   self.state.get("design", "?"))):
+            return
+        self.sp_sec.clear()
+        argv = [self.pyaedt_py.get(), BACKEND, "delsheets", "--port",
+                GRPC_PORT, "--objects", ",".join(names)]
+        if not self.v_ssave.get():
+            argv.append("--no-save")
+        self.runner.start(argv, tag="delsheets")
 
     def _sync_j(self):
         if not self.runner.running:
@@ -2208,6 +2738,7 @@ class App:
         try:
             import matplotlib
             matplotlib.use("TkAgg")
+            setup_mpl_cjk()      # 中文字体：否则标题/标签是方框
             from matplotlib.backends.backend_tkagg import (
                 FigureCanvasTkAgg)
             from matplotlib.figure import Figure
@@ -2241,7 +2772,7 @@ class App:
             ax.set_axisbelow(True)
             topv = float(v.max()) if n else 1.0
             ax.set_ylim(0, topv * 1.18 if topv > 0 else 1.0)
-            t2 = "OhmicLoss 对比"
+            t2 = "栈内总损耗 Σ = %.6g W（%d 个实体）" % (total, n)
             if self._bar_sweep == "Freq" and self._bar_freq is not None:
                 t2 += " | Freq = %g" % self._bar_freq
             ax.set_title(t2, pad=12, fontsize=11, color="#1F2937")
@@ -2532,8 +3063,9 @@ class App:
 
     def _sync_cur(self):
         if not self.runner.running:
-            self.b_cur.configure(state="normal" if self.sp_cur.rbox.size()
-                                 else "disabled")
+            _st = "normal" if self.sp_cur.rbox.size() else "disabled"
+            self.b_cur.configure(state=_st)
+            self.b_curbar.configure(state=_st)
         objs = self.sp_cur.stack
         if objs and not self.v_report.get().startswith("I_sec"):
             self.v_report.set(self._auto_name(objs))
@@ -2828,7 +3360,10 @@ class App:
     def on_done(self, tag, code):
         if tag == "scan" and code == 0:
             self.apply_scan()
-        elif tag in ("ohmic", "current", "dropvars") and code == 0:
+            if self._curbar_pending:
+                self._curbar_pending = False
+                self.root.after(300, self._curbar_decide)
+        elif tag in ("ohmic", "current", "dropvars", "delsheets") and code == 0:
             self.log("（自动刷新扫描结果）")
             self.root.after(300, self.do_scan)
         elif tag in ("temp", "readtemp") and code == 0:
@@ -2840,6 +3375,10 @@ class App:
                 self.root.after(300, self.do_scan)
         elif tag == "barall" and code == 0:
             self._parse_lossbarall_from_log()
+        elif tag == "curbar" and code == 0:
+            self._parse_curbar_from_log()
+        elif tag == "curbarsec" and code == 0:
+            self.root.after(200, self._curbar_after_sections)
 
     def apply_scan(self):
         """从日志里取最后一行 @@JSON@@ 解析。"""
@@ -2887,15 +3426,11 @@ class App:
         self._apply_pools(d)
         self._refresh_vol_tab()
 
-        # 剖面清单
-        self.secbox.delete(0, tk.END)
-        nm = set(d.get("nonmodel", []))
-        for n in d.get("sections", []) or d.get("sheets", []):
-            flag = "Non-model" if n in nm or n in d.get("sheets", []) \
-                else "Model?"
-            self.secbox.insert(tk.END, "  %-46s %s" % (n, flag))
+        # 剖面子 tab（总览）：候选池 = sections（无则全部 sheets）
+        _sec_pool = list(d.get("sections", []) or d.get("sheets", []))
+        self.sp_sec.set_pool(_sec_pool)
         self.v_secinfo.set("剖面 / Sheets 共 %d 个（OLD_ 前缀 %d 个）"
-                           % (self.secbox.size(), len(d.get("old", []))))
+                           % (len(_sec_pool), len(d.get("old", []))))
         self.zbox.delete(0, tk.END)
         self.v_zinfo.set("设计已更新，请重新筛选")
         self._fill_temps(d)
@@ -2965,6 +3500,332 @@ class App:
             argv.append("--no-backup")
         self.runner.start(argv, tag="current")
 
+    # ------------------------------------------- 电流柱状图（有效值，无报表）
+    def _existing_section_of(self, obj):
+        """找设计里已存在的、以 <obj>_Section 为前缀的剖面片（不新建）。
+
+        优先精确的 <obj>_Section1；否则取排序后的第一个。
+        找不到返回 None。
+        """
+        pre = obj + "_Section"
+        cands = sorted(
+            str(s) for s in (self.state.get("sections") or [])
+            if str(s).startswith(pre) and not str(s).startswith("OLD_"))
+        if not cands:
+            return None
+        exact = obj + "_Section1"
+        return exact if exact in cands else cands[0]
+
+    def _cur_resolve(self, obj):
+        """解析实体 -> (片名, 标量分量, 是否复用已有剖面)。
+
+        优先用 I_sec_* 表达式（面/分量与当初建剖面时一致，最可靠）；
+        其次复用已有的 <obj>_Section* 剖面（标量分量取当前剖切面）；
+        都没有返回 (None, None, False)。
+        """
+        sheet, scalar = self._cur_section_of(obj)
+        if sheet and scalar:
+            return sheet, scalar, False
+        sheet = self._existing_section_of(obj)
+        if sheet:
+            sc = PLANE_SCALAR.get(self.v_plane.get())
+            if sc:
+                return sheet, sc, True
+        return None, None, False
+
+    def _cur_section_of(self, obj):
+        """从扫描结果里找实体对应的剖面片名 + 标量分量。
+
+        剖面表达式形如：
+            I_sec_42 = Integrate(Surface(Sec_42_Section1),
+                                 AtPhase(ScalarY(<Jx,Jy,Jz>), Phase))
+        解析出 ("Sec_42_Section1", "ScalarY")；找不到返回 (None, None)。
+        """
+        want = "I_sec_" + obj.split("_")[-1]
+        pat = re.compile(
+            r"^" + re.escape(want) + r"\s*=\s*Integrate\(\s*Surface\(([^)]*)\)"
+            r"\s*,\s*(?:AtPhase\()?\s*(Scalar[XYZ])\(")
+        for e in (self.state.get("expressions") or []):
+            m = pat.match(str(e).strip())
+            if m:
+                return m.group(1).strip(), m.group(2)
+        return None, None
+
+    def do_curbar(self):
+        """入栈剖面的电流有效值柱状图（独立按钮，不依赖 IvsPhase图像）。
+
+        已有剖面电流表达式（I_sec_*）的实体直接算；没有的先走
+        current_integral_pipeline --no-report 建 Non-model 剖面
+        （带 .aedt 备份、Model=true 自检、保存前结果目录指纹校验），再算。
+        峰值 = 场计算器 Integrate(Surface(片), CmplxMag(Scalar?(<Jx,Jy,Jz>)))，
+        有效值 = 峰值 / √2。全程不建 Maxwell 报表。
+        """
+        objs = self.sp_cur.stack
+        if not objs:
+            messagebox.showinfo("提示", "先把实体入栈")
+            return
+        if self.runner.running:
+            messagebox.showinfo("提示", "后端正在执行，请等它结束")
+            return
+        res = [self._cur_resolve(o) for o in objs]
+        ready = sum(1 for r in res if r[0])
+        reuse = sum(1 for r in res if r[2])
+        msg = ("设计：%s / %s\n入栈实体：%d 个\n\n"
+               "峰值 = 场计算器 Integrate(Surface(片), CmplxMag(Scalar*(<Jx,Jy,Jz>)))\n"
+               "→ 电流峰值，有效值 = 峰值 / √2。不建 Maxwell 报表。\n"
+               % (self.state.get("project", "?"),
+                  self.state.get("design", "?"), len(objs)))
+        if reuse:
+            msg += ("\n%d 个实体已有同名前缀剖面，直接复用（不新建）。\n" % reuse)
+        if ready < len(objs):
+            msg += ("\n其中 %d 个没有可用剖面，将先自动建 Non-model 剖面\n"
+                    "（先备份 .aedt；保存前做结果目录指纹校验）。\n"
+                    % (len(objs) - ready))
+        if not messagebox.askyesno("确认 — 电流柱状图", msg):
+            return
+        self._curbar_objs = list(objs)
+        self._curbar_items = []
+        self._curbar_pending = True
+        self.log("电流柱状图：先刷新扫描，确定哪些实体缺剖面…")
+        self.do_scan()
+
+    def _curbar_decide(self):
+        """扫描刷新后：缺剖面的先建剖面，其余直接取数。"""
+        objs = list(self._curbar_objs)
+        self._curbar_pending = False
+        if not objs:
+            return
+        items, need, reused = [], [], []
+        for o in objs:
+            sheet, scalar, reused_existing = self._cur_resolve(o)
+            if sheet and scalar:
+                items.append("%s:%s:%s" % (o, sheet, scalar))
+                if reused_existing:
+                    reused.append(o)
+            else:
+                need.append(o)
+        for o in reused:
+            self.log("   已有同名前缀剖面，直接复用（不新建）: %s" % o)
+        if need:
+            self.log("电流柱状图：%d 个实体缺剖面 -> 先建 Non-model 剖面：%s"
+                     % (len(need), ", ".join(need)))
+            argv = [self.pyaedt_py.get(), PIPELINE,
+                    "--objects", ",".join(need),
+                    "--plane", self.v_plane.get(),
+                    "--no-report", "--no-png",
+                    "--project", self.state.get("project", ""),
+                    "--design", self.state.get("design", ""),
+                    "--port", GRPC_PORT]
+            if not self.v_csave.get():
+                argv.append("--no-save")
+            if not self.v_cbackup.get():
+                argv.append("--no-backup")
+            self._curbar_items = items
+            self.runner.start(argv, tag="curbarsec")
+            return
+        self._curbar_items = []
+        self._curbar_launch(items)
+
+    def _curbar_after_sections(self):
+        """剖面建完：把日志里 [OK] 的表达式合进 state，再取数。"""
+        got = []
+        for ln in self.txt.get("1.0", tk.END).splitlines():
+            m = re.search(r"\[OK\]\s+(I_sec_\w+ = Integrate\(Surface\(.+\))",
+                          ln)
+            if m:
+                got.append(m.group(1).strip())
+        byname = {}
+        for e in (self.state.get("expressions") or []):
+            byname[str(e).split("=")[0].strip()] = str(e)
+        for e in got:
+            byname[e.split("=")[0].strip()] = e
+            self.log("   剖面就绪: %s" % e.split("=")[0].strip(), "ok")
+        self.state["expressions"] = list(byname.values())
+        objs = list(self._curbar_objs)
+        self._curbar_objs = []
+        items = list(self._curbar_items)
+        self._curbar_items = []
+        miss = []
+        for o in objs:
+            sheet, scalar = self._cur_section_of(o)
+            if sheet and scalar:
+                items.append("%s:%s:%s" % (o, sheet, scalar))
+            else:
+                miss.append(o)
+        if miss:
+            messagebox.showwarning(
+                "剖面生成失败",
+                "以下 %d 个实体建剖面/表达式失败：\n%s\n\n详见日志。"
+                % (len(miss), ", ".join(miss[:12]) +
+                   ("…" if len(miss) > 12 else "")))
+        self._curbar_launch(items)
+
+    def _curbar_launch(self, items):
+        if not items:
+            messagebox.showwarning("缺少剖面", "没有任何可计算的剖面，详见日志")
+            return
+        argv = [self.pyaedt_py.get(), BACKEND, "irms",
+                "--items", ",".join(items),
+                "--project", self.state.get("project", ""),
+                "--design", self.state.get("design", ""),
+                "--port", GRPC_PORT]
+        self.runner.start(argv, tag="curbar")
+
+    def _parse_curbar_from_log(self):
+        txt = self.txt.get("1.0", tk.END)
+        line = None
+        for ln in txt.splitlines():
+            if ln.startswith("@@CURBAR@@"):
+                line = ln[len("@@CURBAR@@"):]
+        if not line:
+            self.log("（日志中未找到 @@CURBAR@@ 数据行）")
+            return
+        try:
+            d = json.loads(line)
+        except Exception as e:
+            self.log("!! 电流 JSON 解析失败: %s" % e, "err")
+            return
+        pool = d.get("pool") or {}
+        if not pool:
+            self.log("!! 没有取到任何剖面电流", "err")
+            return
+        labels = sorted(pool.keys(),
+                        key=lambda k: -abs(float(pool[k].get("rms") or 0)))
+        self.cur_data = (labels,
+                         [abs(float(pool[k].get("rms") or 0)) for k in labels],
+                         [abs(float(pool[k].get("peak") or 0)) for k in labels],
+                         str(d.get("project", "")),
+                         str(d.get("design", "")),
+                         str(d.get("setup", "")))
+        mx = max(self.cur_data[1]) if self.cur_data[1] else 0.0
+        for _lab, _v in zip(labels, self.cur_data[1]):
+            if mx > 0 and _v < 0.01 * mx:
+                self.log("  !! 方向自检告警: %s 的 Irms=%.4g 只有最大值的 %.2f%%"
+                         " —— 复用的剖面或剖切面方向可能选错"
+                         % (_lab, _v, _v / mx * 100.0), "err")
+        self._open_curbar_window()
+        self.log("电流柱状图：%d 个剖面，ΣIrms = %.6g A"
+                 "（场计算器 CmplxMag 读数，无报表）"
+                 % (len(labels), sum(self.cur_data[1])), "ok")
+
+    def _open_curbar_window(self):
+        if not self.cur_data:
+            messagebox.showinfo("提示", "先点【电流柱状图】")
+            return
+        old = self._curwin
+        if old is not None and old.winfo_exists():
+            old.deiconify()
+            old.lift()
+            return
+        labels, rms, peak, proj, dsn, setup = self.cur_data
+        win = tk.Toplevel(self.root)
+        self._curwin = win
+        win.title("电流有效值柱状图 — %s / %s" % (proj, dsn))
+        win.geometry("1080x720")
+        win.minsize(560, 380)
+        win.resizable(True, True)
+        win.configure(bg="#F5F7FA")
+        top = ttk.Frame(win)
+        top.pack(fill="x", padx=10, pady=(8, 4))
+        ttk.Label(top, text="ΣIrms = %.6g A（%d 个剖面）| 解 %s | "
+                            "有效值 = 场计算器峰值 ÷ √2"
+                  % (sum(rms), len(labels), setup or "-"),
+                  style="Muted.TLabel").pack(side="left")
+        ttk.Button(top, text="复制数据",
+                   command=self._curbar_copy).pack(side="right", padx=4)
+        ttk.Button(top, text="保存图片…",
+                   command=self._curbar_save).pack(side="right")
+        self._cur_fig = None
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg")
+            setup_mpl_cjk()          # 中文字体：否则标题/标签是方框
+            from matplotlib.backends.backend_tkagg import (
+                FigureCanvasTkAgg)
+            from matplotlib.figure import Figure
+            import numpy as np
+            fig = Figure(figsize=(9.0, 4.8), dpi=100)
+            fig.patch.set_facecolor("#F5F7FA")
+            ax = fig.add_subplot(111)
+            ax.set_facecolor("#FFFFFF")
+            for sp_ in ("top", "right"):
+                ax.spines[sp_].set_visible(False)
+            for sp_ in ("left", "bottom"):
+                ax.spines[sp_].set_color("#E1E7EF")
+            ax.tick_params(colors="#6B7280", labelsize=9, length=0)
+            n = len(labels)
+            x = np.arange(n)
+            v = np.array(rms, dtype=float)
+            ax.bar(x, v, width=(0.62 if n <= 16 else 0.42),
+                   color="#2563EB", linewidth=0)
+            ax.set_xticks(x)
+            if n <= 20:
+                ax.set_xticklabels(labels, rotation=30, ha="right")
+                for xi, vv in zip(x, v):
+                    ax.text(xi, vv, "%.4g" % vv, ha="center", va="bottom",
+                            fontsize=8, color="#6B7280")
+            else:
+                ax.set_xticklabels([])
+                ax.set_xlabel("共 %d 项 · 名称过多已隐藏" % n,
+                              fontsize=8, color="#6B7280", labelpad=6)
+            ax.set_ylabel("I_rms (A)")
+            ax.yaxis.grid(True, color="#E1E7EF", linewidth=0.8)
+            ax.set_axisbelow(True)
+            topv = float(v.max()) if n else 1.0
+            ax.set_ylim(0, topv * 1.18 if topv > 0 else 1.0)
+            ax.set_title("入栈剖面电流有效值（I_peak / √2）· %d 个剖面"
+                         % n, pad=12, fontsize=11, color="#1F2937")
+            fig.tight_layout()
+            cv = FigureCanvasTkAgg(fig, master=win)
+            cv.draw()
+            cv.get_tk_widget().pack(fill="both", expand=True,
+                                    padx=10, pady=(4, 10))
+            self._cur_fig = fig
+        except ImportError:
+            ttk.Label(win, text="（未安装 matplotlib：下面用文本显示，"
+                                "可用【复制数据】粘进 Excel 画图）",
+                      style="Muted.TLabel").pack(anchor="w", padx=12)
+            tx = tk.Text(win, height=20, wrap="none",
+                         bg="#FFFFFF", fg="#1F2937", relief="flat")
+            tx.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+            tx.insert(tk.END, "%-28s %14s %14s\n" %
+                      ("实体", "I_rms (A)", "I_peak (A)"))
+            for a, b, c in zip(labels, rms, peak):
+                tx.insert(tk.END, "%-28s %14.6g %14.6g\n" % (a, b, c))
+            tx.configure(state="disabled")
+
+    def _curbar_copy(self):
+        if not self.cur_data:
+            messagebox.showinfo("提示", "没有数据")
+            return
+        labels, rms, peak, proj, dsn, setup = self.cur_data
+        txt = "实体\tI_rms(A)\tI_peak(A)\n"
+        txt += "".join("%s\t%.8g\t%.8g\n"
+                       % (a, b, c) for a, b, c in zip(labels, rms, peak))
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(txt)
+            self.log("电流数据已复制到剪贴板（制表符分隔，可直接粘进 Excel）",
+                     "ok")
+        except Exception as e:
+            self.log("!! 复制失败: %s" % str(e)[:90], "err")
+
+    def _curbar_save(self):
+        if self._cur_fig is None:
+            messagebox.showinfo("提示", "没有图片（matplotlib 不可用，"
+                                        "请用【复制数据】）")
+            return
+        p = filedialog.asksaveasfilename(
+            title="保存电流柱状图", defaultextension=".png",
+            filetypes=[("PNG 图片", "*.png"), ("PDF 文档", "*.pdf")])
+        if not p:
+            return
+        try:
+            self._cur_fig.savefig(p, dpi=150, bbox_inches="tight")
+            self.log("已保存图表: %s" % p, "ok")
+        except Exception as e:
+            self.log("!! 保存失败: %s" % str(e)[:110], "err")
+
 
 def _set_taskbar_appid():
     """Windows：给进程一个独立 AppUserModelID，任务栏才会用自己的图标。
@@ -2983,11 +3844,15 @@ def _set_taskbar_appid():
 def main():
     global SCALE
     cfg = load_cfg()
+    # 2026-09-10：警告不能在这里弹 —— 此时还没有 Tk 主窗口，messagebox 会让
+    # tkinter 隐式建一个 default root 并卡在模态框上，主窗口永远建不出来，
+    # 表现就是「双击 exe 没反应」。改成窗口起来之后再用 after 提示。
+    _warn_py = ""
     if not os.path.isfile(cfg["python"]):
-        messagebox.showwarning(
-            "缺少 PyAEDT 解释器",
+        _warn_py = (
             "未找到：\n%s\n\n请在顶部「环境设置」里指定带 PyAEDT 的 python.exe，"
-            "或把本程序放到含 env\\Scripts\\python.exe 的目录下再运行。" % cfg["python"])
+            "或把本程序放到含 env\\Scripts\\python.exe 的目录下再运行。"
+            % cfg["python"])
     _set_taskbar_appid()         # 必须在建窗口前：任务栏图标归本进程
     SCALE = _enable_hidpi()      # 必须在建 Tk 窗口之前调用
     root = tk.Tk()
@@ -2999,6 +3864,9 @@ def main():
         except Exception:
             pass
     App(root, cfg)
+    if _warn_py:
+        root.after(600, lambda: messagebox.showwarning(
+            "缺少 PyAEDT 解释器", _warn_py))
     root.mainloop()
     return 0
 

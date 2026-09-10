@@ -54,6 +54,11 @@ FILES = [
     "gh_upload.py",
     "upload_gui.py",
     "MaxwellPost.spec",
+    "requirements.txt",
+    "install.py",
+    "install.bat",
+    "install.vbs",
+    "install.ps1",
 ]
 
 DESCRIPTION = ("Post-processing GUI for Ansys Maxwell winding simulations: "

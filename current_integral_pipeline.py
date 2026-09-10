@@ -311,6 +311,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--report-only", action="store_true",
                      help="表达式已在场计算器：跳过剖面/积分，直接建报表+取数")
+    ap.add_argument("--no-report", action="store_true",
+                     help="只建剖面 + 场计算器表达式，不建报表/取数"
+                          "（给【电流柱状图】用）")
     ap.add_argument("--no-save", action="store_true")
     ap.add_argument("--no-backup", action="store_true")
     ap.add_argument("--no-png", action="store_true")
@@ -446,6 +449,30 @@ def main():
             if not ok_list:
                 print("!! 全部失败，跳过建报表")
                 return 3
+
+            if args.no_report:
+                print("=" * 74)
+                print("no-report：只建剖面 + 场计算器表达式，跳过报表/取数")
+                print("剖面片    : %s" % ", ".join(k for _, _, k in ok_list))
+                _safe, _msgs = diff_results(snap_before, snap_results(m3d))
+                print("保存前结果目录: %s" % ("完好" if _safe else "!! 异常 !!"))
+                for _m in _msgs:
+                    print("   %s" % _m)
+                if args.no_save:
+                    print("（--no-save，未保存）")
+                    return 0
+                if not _safe:
+                    print("!! 结果目录有变化，拒绝保存")
+                    return 3
+                m3d.save_project()
+                _post = snap_results(m3d)
+                _safe2, _msgs2 = diff_results(snap_before, _post)
+                print("保存完成 | 保存后结果目录: %s"
+                      % ("完好（大小指纹一致，%d 个文件）" % len(_post)
+                         if _safe2 else "!! 已损坏 !!"))
+                for _m in _msgs2:
+                    print("   %s" % _m)
+                return 0 if _safe2 else 3
 
         # ================= 步骤 3/4：建 Maxwell Fields Report =================
         print("=" * 74)

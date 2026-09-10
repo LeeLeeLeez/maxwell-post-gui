@@ -117,6 +117,38 @@ pythonw aedt_gui.py
 
 ---
 
+## 🧳 换一台电脑部署
+
+**推荐：从 GitHub 拿，别用 U 盘拷。** 某些公司机器装了 DLP 透明加密，本机散落的
+`.py` 在Explorer看来可能是密文，拷到新机器也是密文。仓库里的才是干净的明文。
+
+```bash
+# 新电脑上
+git clone https://github.com/LeeLeeLez/maxwell-post-gui.git
+cd maxwell-post-gui
+pip install -r requirements.txt
+python aedt_gui.py
+```
+
+不想装 Python 环境的话：到 Releases 页面下载 `MaxwellPost.exe`，
+**连同仓库里的 `aedt_gui_backend.py` / `current_integral_pipeline.py` /
+`aedt_env.py` / `section_cs.py` / `indcalc_core.py` 一起放在同一个目录**（后端是靠
+子进程跑这些脚本的，缺了 AEDT 相关的 tab 就动不了）。
+
+### 新机器上必须确认的三件事
+
+| 项 | 说明 |
+|---|---|
+| **解释器路径** | GUI 默认找同目录 `env\Scripts\python.exe`。新机器多半没有，启动后到顶部「环境设置」里手动指定装了 PyAEDT 的那个 `python.exe` |
+| **AEDT 已在运行** | 先打开 AEDT、打开目标工程并把要处理的设计设为激活，再点「扫描当前设计」 |
+| **gRPC 端口** | 默认 `50051`。AEDT 侧不一致时改 `aedt_gui.py` 里的 `GRPC_PORT` |
+
+### 只用 matrix等效 的话
+
+那个 tab 是纯 numpy 离线计算，不连 AEDT、不需要 PyAEDT：把结果目录里的
+`*_PAR*.sd` 或 Maxwell 导出的矩阵文本拷过去就能算。
+换台没装 Ansys 的笔记本出差时用得很顺手。
+
 ## 📦 打包成 exe（可选）
 
 仓库里带了现成的 PyInstaller 配置 `MaxwellPost.spec`：

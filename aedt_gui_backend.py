@@ -10,12 +10,20 @@ aedt_gui_backend.py —— aedt_gui.py 的后端（跑在带 PyAEDT 的 venv 里
     temp   --objects a,b,c      对指定实体执行 Set Object Temperature；
                                 加 --read-only 只读取当前温度（不赋值不保存）
     dropvars --names a,b,c      删除场计算器命名表达式（只删表达式，不动几何）
+    delsheets --objects a,b,c   删除剖面/片体（仅 Sheets/Non Model 组，不碰 Solids）
     barloss-all                 一次性读取场计算器全部 OhmicLoss_* 表达式
                                 （PyAEDT get_solution_data，X=Freq 自动回退
                                 Phase；坑 #46）+ 建/复用总报表 LossBar_All
                                 （存在即复用，绝不重建），
                                 输出 @@LOSSBARALL@@{pool...} 供 GUI 缓存；
                                 之后入栈实体出图纯 GUI 本地，零 AEDT 交互
+    irms   --items a:Sec_a_Section1:ScalarY,...
+                                场计算器 Integrate(Surface(片),
+                                CmplxMag(Scalar?(<Jx,Jy,Jz>))) = 电流【峰值】，
+                                有效值 = 峰值/sqrt(2)；全程在 AEDT 内部
+                                IronPython 完成（CalculatorWrite → .fld），
+                                不建报表、不建命名表达式、不动几何，
+                                输出 @@CURBAR@@{...}
     mats                        列出设计里出现的所有材料及实体数（调试用）
 
 铁律:
@@ -107,6 +115,143 @@ log("=== OHMIC BATCH DONE ===")
 
 OHMIC_OUT = os.path.join(tempfile.gettempdir(), "aedt_gui_ohmic_out.txt")
 OHMIC_PY = os.path.join(tempfile.gettempdir(), "aedt_gui_ohmic.py")
+
+
+# --------------------------------------------------- 剖面电流有效值（irms）
+# 场计算器序列（用户 2026-09-10 手验）：
+#   EnterQty("J") -> CalcOp(ScalarX/Y/Z) -> CalcOp("CmplxMag")
+#   -> EnterSurf(<片>) -> CalcOp("Integrate")
+# 得到 Integrate(Surface(<片>), CmplxMag(Scalar?(<Jx,Jy,Jz>))) = 电流【峰值】
+# 有效值 = 峰值 / sqrt(2)。
+# 取值走 CalculatorWrite 写 .fld 再读最后一行 —— 等价于计算器的 Eval 按钮，
+# 不建 Maxwell 报表、不建命名表达式、不动几何。
+# ⚠ 整个流程都在 AEDT 内部 IronPython 里跑：gRPC 下
+#   DoesNamedExpressionExists / EnterSurf 之类不稳（坑 #36）。
+IRMS_TEMPLATE = r"""# -*- coding: utf-8 -*-
+import os
+
+OUT = r"__OUT__"
+FLD = r"__FLD__"
+SETUP = "__SETUP__"
+VARIATION = __VARIATION__
+ITEMS = __ITEMS__
+FACTOR = 0.7071067811865476
+
+f = open(OUT, "w")
+f.close()
+
+
+def safe(v):
+    try:
+        s = str(v)
+    except Exception:
+        return "<unprintable>"
+    s = s.replace("\x00", "")
+    o = ""
+    for ch in s:
+        o += ch if ord(ch) < 128 else "?"
+    return o
+
+
+def log(s):
+    f = open(OUT, "a")
+    f.write(safe(s) + "\n")
+    f.close()
+
+
+def read_last_float(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        lines = [x.strip() for x in open(path, "r") if x.strip()]
+    except Exception:
+        return None
+    for ln in reversed(lines):
+        try:
+            return float(ln)
+        except Exception:
+            pass
+    return None
+
+
+def clc_write(oFR, path):
+    # 旧版简单写法 + 2026 R1 的 NAME:Write 写法，两种都试
+    try:
+        oFR.CalculatorWrite(path, ["Solution:=", SETUP], VARIATION)
+        return True
+    except Exception as e1:
+        try:
+            sol = ["NAME:Setup", "Solution:=", SETUP]
+            exp = ["NAME:Expression", "NameOfExpression:=", []]
+            oFR.CalculatorWrite(path, ["NAME:Write", sol, exp], VARIATION)
+            return True
+        except Exception as e2:
+            raise RuntimeError("CalculatorWrite fail: %s | %s"
+                               % (safe(e1)[:90], safe(e2)[:90]))
+
+
+log("=== IRMS BATCH START ===")
+log("setup     : " + SETUP)
+log("variation : " + safe(VARIATION))
+try:
+    oDesktop.RestoreWindow()
+    oProject = oDesktop.GetActiveProject()
+    oDesign = None
+    try:
+        oDesign = oProject.GetActiveDesign()
+    except Exception:
+        oDesign = None
+    if oDesign is None:
+        kids = list(oProject.GetChildNames())
+        if kids:
+            oDesign = oProject.GetChildObject(kids[0])
+    if oDesign is None:
+        raise RuntimeError("can not get design")
+    log("design: " + safe(oDesign.GetName()))
+    oFR = oDesign.GetModule("FieldsReporter")
+
+    for label, sheet, scalar in ITEMS:
+        try:
+            oFR.CalcStack("clear")
+            oFR.EnterQty("J")
+            oFR.CalcOp(scalar)
+            oFR.CalcOp("CmplxMag")
+            oFR.EnterSurf(sheet)
+            oFR.CalcOp("Integrate")
+            try:
+                if os.path.isfile(FLD):
+                    os.remove(FLD)
+            except Exception:
+                pass
+            clc_write(oFR, FLD)
+            peak = read_last_float(FLD)
+            if peak is None:
+                log("  FAIL %s: no numeric value in .fld" % label)
+                try:
+                    if os.path.isfile(FLD):
+                        for ln in open(FLD, "r"):
+                            log("    fld| " + safe(ln)[:180])
+                except Exception:
+                    pass
+                continue
+            rms = abs(peak) * FACTOR
+            log("  OK   %s  peak=%.10g  rms=%.10g A" % (label, peak, rms))
+            log("  DATA %s|%.12g|%.12g" % (label, peak, rms))
+        except Exception as e:
+            log("  FAIL %s -> %s" % (label, safe(e)[:200]))
+    try:
+        oFR.CalcStack("clear")
+    except Exception:
+        pass
+    log("=== IRMS BATCH DONE ===")
+except Exception as e:
+    log("!! ERR: " + safe(type(e).__name__) + " : " + safe(e))
+"""
+
+IRMS_OUT = os.path.join(tempfile.gettempdir(), "aedt_gui_irms_out.txt")
+IRMS_PY = os.path.join(tempfile.gettempdir(), "aedt_gui_irms.py")
+IRMS_FLD = os.path.join(tempfile.gettempdir(), "aedt_gui_irms.fld")
+IRMS_RMS_FACTOR = 0.7071067811865476          # 1/sqrt(2)
 
 
 def _results_info(proj, dname):
@@ -486,6 +631,80 @@ def cmd_dropvars(a):
         if not safe:
             return 3
         return 0 if not fail else 1
+    finally:
+        disconnect(d)
+
+
+def cmd_delsheets(a):
+    """删除剖面/片体（仅 Sheets / Non Model 组；不碰 Solids、不碰网格）。"""
+    names = [x.strip() for x in a.objects.split(",") if x.strip()]
+    if not names:
+        print("!! 没有指定片体名")
+        return 2
+
+    d = connect(port=a.port)
+    try:
+        proj = d.odesktop.GetActiveProject()
+        if proj is None:
+            print("!! 没有打开的工程")
+            return 2
+        des = get_design(proj)
+        dname = str(des.GetName())
+        print("工程 : %s" % str(proj.GetName()))
+        print("设计 : %s" % dname)
+        ed = des.SetActiveEditor("3D Modeler")
+        om = obj_map(ed)
+        sheets = set(n for n, g in om.items() if g in ("Sheets", "Non Model"))
+
+        snap_before, rd = snap_results(proj, dname)
+        print("结果快照  : %s" % ("%d 个文件" % len(snap_before)
+                                  if snap_before else "目录不存在: %s" % rd))
+
+        ok, skip = [], []
+        for n in names:
+            if n not in om:
+                skip.append(n)
+                print("  [跳过] %-30s 设计里不存在" % n)
+            elif n not in sheets:
+                skip.append(n)
+                print("  [跳过] %-30s 不是片体（%s 组），拒绝删除"
+                      % (n, om[n]))
+            else:
+                ok.append(n)
+                print("  [删除] %-30s （%s）" % (n, om[n]))
+            sys.stdout.flush()
+
+        if ok:
+            try:
+                ed.Delete(["NAME:Selections", "Selections:=", ",".join(ok)])
+            except Exception as e:
+                print("!! Delete 调用失败: %s" % str(e)[:200])
+                return 3
+
+        # 复核
+        om2 = obj_map(ed)
+        left = [n for n in ok if n in om2]
+        print("复核      : 目标 %d 个中仍存在 %d 个" % (len(ok), len(left)))
+
+        if ok and not a.no_save:
+            mid, _ = snap_results(proj, dname)
+            safe, msgs = diff_results(snap_before, mid)
+            if not safe:
+                print("!! 保存前结果目录就有变化，拒绝保存")
+                for m in msgs:
+                    print("   %s" % m)
+                return 3
+            proj.Save()
+            print("工程已保存")
+
+        after, _ = snap_results(proj, dname)
+        safe, msgs = diff_results(snap_before, after)
+        print("结果目录  : %s" % ("完好" if safe else "!! 异常 !!"))
+        for m in msgs:
+            print("   %s" % m)
+        if not safe:
+            return 3
+        return 0 if not left else 1
     finally:
         disconnect(d)
 
@@ -975,6 +1194,127 @@ def cmd_temperature(a):
         disconnect(d)
 
 
+def cmd_irms(a):
+    """读入栈剖面的电流【有效值】。
+
+    峰值 = 场计算器 Integrate(Surface(片), CmplxMag(Scalar?(<Jx,Jy,Jz>)))
+    （用户 2026-09-10 手验的写法），有效值 = 峰值 / sqrt(2)。
+    求值在 AEDT 内部 IronPython 完成（CalculatorWrite → .fld），
+    不建 Maxwell 报表、不建命名表达式、不动几何。
+    输出一行 @@CURBAR@@{...} 供 GUI 画柱状图。
+    """
+    items = []
+    for tok in a.items.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        parts = tok.split(":")
+        if len(parts) != 3:
+            print("!! --items 片段格式应为 label:sheet:scalar，得到: %s" % tok)
+            continue
+        lab, sh, sc = (parts[0].strip(), parts[1].strip(), parts[2].strip())
+        if sc not in ("ScalarX", "ScalarY", "ScalarZ"):
+            print("!! 标量分量不合法: %s（只能是 ScalarX/Y/Z）" % sc)
+            continue
+        items.append([lab, sh, sc])
+    if not items:
+        print("!! 没有可计算的剖面")
+        return 2
+
+    d = connect(port=a.port)
+    try:
+        proj = d.odesktop.GetActiveProject()
+        if proj is None:
+            print("!! 没有打开的工程")
+            return 2
+        pname = str(proj.GetName())
+        des = get_design(proj)
+        dname = str(des.GetName())
+        if a.design and a.design != dname:
+            print("!! 当前激活设计是 %s，与界面上的 %s 不一致"
+                  % (dname, a.design))
+            return 2
+        print("工程 : %s" % pname)
+        print("设计 : %s" % dname)
+        print("剖面 : %d 个" % len(items))
+        for lab, sh, sc in items:
+            print("    %-14s %-28s %s" % (lab, sh, sc))
+
+        # setup 名 + intrinsics 变体（默认取 setup 的 default_intrinsics）
+        from ansys.aedt.core import Maxwell3d
+        m3d = Maxwell3d(project=pname, design=dname, version="2026.1",
+                        port=a.port, new_desktop=False, close_on_exit=False)
+        setup = str(m3d.nominal_adaptive)
+        variation = []
+        try:
+            variation = list(m3d.post._check_intrinsics(
+                None, setup, return_list=True))
+        except Exception as e:
+            print("[提示] 取 intrinsics 失败(%s)，改用 setup 默认值"
+                  % str(e)[:80])
+            try:
+                sn = setup.split(":")[0].strip()
+                di = dict(m3d.design_setups[sn].default_intrinsics)
+                for k, v in di.items():
+                    variation += [str(k) + ":=",
+                                  str(v[0] if isinstance(v, (list, tuple))
+                                      else v)]
+            except Exception as e2:
+                print("[提示] default_intrinsics 也失败: %s" % str(e2)[:80])
+        print("解上下文: %s" % setup)
+        print("变体    : %s" % variation)
+
+        body = (IRMS_TEMPLATE
+                .replace("__OUT__", IRMS_OUT)
+                .replace("__FLD__", IRMS_FLD)
+                .replace("__SETUP__", setup)
+                .replace("__VARIATION__", json.dumps(variation))
+                .replace("__ITEMS__", json.dumps(items)))
+        if os.path.isfile(IRMS_OUT):
+            try:
+                os.remove(IRMS_OUT)
+            except Exception:
+                pass
+        with open(IRMS_PY, "w") as fh:
+            fh.write(body)
+        print("RunScript: %s" % IRMS_PY)
+        d.odesktop.RunScript(IRMS_PY)
+        time.sleep(0.3)
+
+        pool, bad = {}, []
+        if os.path.isfile(IRMS_OUT):
+            with open(IRMS_OUT, "r") as fh:
+                for ln in fh:
+                    ln = ln.rstrip()
+                    print("   " + ln)
+                    if ln.startswith("  DATA "):
+                        seg = ln[7:].strip().split("|")
+                        if len(seg) == 3:
+                            lab = seg[0].strip()
+                            meta = dict(
+                                (it[0], it) for it in items).get(lab)
+                            pool[lab] = dict(
+                                peak=float(seg[1]), rms=float(seg[2]),
+                                sheet=(meta[1] if meta else ""),
+                                scalar=(meta[2] if meta else ""))
+        for lab, sh, sc in items:
+            if lab not in pool:
+                bad.append(lab)
+        if not pool:
+            print("!! 全部取值失败（看上面的 IronPython 日志）")
+            return 2
+        if bad:
+            print("[提示] %d 个剖面没取到值: %s" % (len(bad), ", ".join(bad)))
+        print("@@CURBAR@@" + json.dumps(
+            dict(pool=pool, project=pname, design=dname, setup=setup,
+                 variation=variation, factor=IRMS_RMS_FACTOR),
+            ensure_ascii=False))
+        return 0
+    finally:
+        disconnect(d)
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=GRPC_PORT)
@@ -1000,6 +1340,11 @@ def main():
     p.add_argument("--names", required=True, help="逗号分隔的变量名")
     p.add_argument("--no-save", action="store_true")
     p.set_defaults(fn=cmd_dropvars)
+
+    p = sub.add_parser("delsheets", parents=[common])
+    p.add_argument("--objects", required=True, help="逗号分隔的片体名")
+    p.add_argument("--no-save", action="store_true")
+    p.set_defaults(fn=cmd_delsheets)
 
     p = sub.add_parser("jplot", parents=[common])
     p.add_argument("--objects", required=True, help="逗号分隔的实体名")
@@ -1029,6 +1374,13 @@ def main():
     p = sub.add_parser("barloss-all", parents=[common])
     p.add_argument("--no-save", action="store_true")
     p.set_defaults(fn=cmd_barloss_all)
+
+    p = sub.add_parser("irms", parents=[common])
+    p.add_argument("--items", required=True,
+                   help="逗号分隔的 label:sheet:ScalarX|Y|Z")
+    p.add_argument("--project", default="", help="校验用：期望的工程名")
+    p.add_argument("--design", default="", help="校验用：期望的设计名")
+    p.set_defaults(fn=cmd_irms)
 
     args = ap.parse_args()
     sys.exit(args.fn(args))

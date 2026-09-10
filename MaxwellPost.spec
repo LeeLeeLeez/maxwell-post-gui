@@ -26,11 +26,19 @@ a = Analysis(
         ('indcalc_core.py', '.'),
         ('maxwell_m.ico', '.'),
     ],
-    hiddenimports=['numpy'],
+    hiddenimports=[
+        'numpy',
+        # 2026-09-10：这两个之前被 excludes 掉了，导致打包版
+        # ① 柱状图降级成 Canvas ② 左侧菜单图标全空（_HAVE_PIL=False）
+        'PIL',
+        'PIL._tkinter_finder',
+        'matplotlib',
+        'matplotlib.backends.backend_tkagg',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['matplotlib', 'pytest', 'PIL', 'IPython'],
+    excludes=['pytest', 'IPython', 'tkinter.test', 'PySide6', 'PyQt5'],
     noarchive=False,
     optimize=0,
 )
