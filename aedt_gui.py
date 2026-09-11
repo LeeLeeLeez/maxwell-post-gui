@@ -988,6 +988,204 @@ def mx_windings_from_aedt(aedt_path, dname):
     return windings, matrices
 
 
+
+class BarStylePanel(ttk.Frame):
+    """柱状图弹窗的样式编辑面板（两行控件，改动即时回调 on_change）。
+
+    可编辑项：标题开关+标题文本、X/Y 轴标签、X/Y 轴范围（空=自动）、
+    柱颜色（取色器+预设色板）、数值标签开关。
+    """
+
+    PRESETS = ("#2563EB", "#DC2626", "#059669", "#D97706", "#7C3AED",
+               "#334155")
+
+    FONTS = ("Microsoft YaHei", "DengXian", "SimHei", "SimSun",
+             "KaiTi", "FangSong", "Arial")
+
+    def __init__(self, master, title="", xlabel="", ylabel="",
+                 color="#2563EB", show_labels=True, on_change=None,
+                 font="", fsize=None):
+        ttk.Frame.__init__(self, master)
+        self.on_change = on_change
+        self.color = color
+        self.v_title_on = tk.BooleanVar(value=bool(title))
+        self.v_title = tk.StringVar(value=title or "")
+        self.v_xlabel = tk.StringVar(value=xlabel or "")
+        self.v_ylabel = tk.StringVar(value=ylabel or "")
+        self.v_x0 = tk.StringVar()
+        self.v_x1 = tk.StringVar()
+        self.v_y0 = tk.StringVar()
+        self.v_y1 = tk.StringVar()
+        self.v_labels = tk.BooleanVar(value=bool(show_labels))
+        self.v_font = tk.StringVar(value=font or "默认")
+        self.v_fsize = tk.StringVar(value=str(fsize if fsize else 9))
+
+        r1 = ttk.Frame(self)
+        r1.pack(fill="x", pady=(2, 0))
+        ttk.Checkbutton(r1, text="标题", variable=self.v_title_on,
+                        command=self._fire).pack(side="left")
+        ttk.Entry(r1, textvariable=self.v_title,
+                  width=36).pack(side="left", padx=(2, 10))
+        ttk.Label(r1, text="X轴标题:").pack(side="left")
+        ttk.Entry(r1, textvariable=self.v_xlabel,
+                  width=16).pack(side="left", padx=(2, 10))
+        ttk.Label(r1, text="Y轴标题:").pack(side="left")
+        ttk.Entry(r1, textvariable=self.v_ylabel,
+                  width=16).pack(side="left", padx=(2, 0))
+
+        self.r2 = r2 = ttk.Frame(self)
+        r2.pack(fill="x", pady=(2, 2))
+        ttk.Label(r2, text="X范围:").pack(side="left")
+        ttk.Entry(r2, textvariable=self.v_x0,
+                  width=7).pack(side="left", padx=(2, 0))
+        ttk.Label(r2, text="~").pack(side="left")
+        ttk.Entry(r2, textvariable=self.v_x1,
+                  width=7).pack(side="left", padx=(0, 10))
+        ttk.Label(r2, text="Y范围:").pack(side="left")
+        ttk.Entry(r2, textvariable=self.v_y0,
+                  width=7).pack(side="left", padx=(2, 0))
+        ttk.Label(r2, text="~").pack(side="left")
+        ttk.Entry(r2, textvariable=self.v_y1,
+                  width=7).pack(side="left", padx=(0, 10))
+        ttk.Label(r2, text="柱色:").pack(side="left")
+        self.b_color = tk.Button(r2, width=3, relief="flat", bd=1,
+                                 bg=self.color, activebackground=self.color,
+                                 cursor="hand2", command=self._pick_color)
+        self.b_color.pack(side="left", padx=(2, 2))
+        for _c in self.PRESETS:
+            tk.Button(r2, width=2, relief="flat", bd=1, bg=_c,
+                      activebackground=_c, cursor="hand2",
+                      command=lambda cc=_c: self._set_color(cc)
+                      ).pack(side="left", padx=1)
+        ttk.Checkbutton(r2, text="显示数值", variable=self.v_labels,
+                        command=self._fire).pack(side="left", padx=(10, 0))
+
+        r3 = ttk.Frame(self)
+        r3.pack(fill="x", pady=(2, 2))
+        ttk.Label(r3, text="字体:").pack(side="left")
+        self.cfont = ttk.Combobox(r3, textvariable=self.v_font, width=14,
+                                  state="readonly",
+                                  values=["默认"] + list(self.FONTS))
+        self.cfont.pack(side="left", padx=(2, 10))
+        self.cfont.bind("<<ComboboxSelected>>", lambda _e: self._fire())
+        ttk.Label(r3, text="字号:").pack(side="left")
+        ttk.Entry(r3, textvariable=self.v_fsize,
+                  width=4).pack(side="left", padx=(2, 10))
+        ttk.Label(r3, text="（6~24，作用于标题/轴/刻度/数值）",
+                  style="Muted.TLabel").pack(side="left")
+
+        # trace 最后加：避免初始化期间的 set 触发回调
+        for _sv in (self.v_title, self.v_xlabel, self.v_ylabel,
+                    self.v_x0, self.v_x1, self.v_y0, self.v_y1,
+                    self.v_fsize):
+            _sv.trace_add("write", lambda *a: self._fire())
+
+    def _fire(self):
+        if self.on_change:
+            self.on_change()
+
+    def _set_color(self, c):
+        self.color = c
+        self.b_color.configure(bg=c, activebackground=c)
+        self._fire()
+
+    def _pick_color(self):
+        from tkinter import colorchooser
+        got = colorchooser.askcolor(color=self.color, parent=self)
+        if got and got[1]:
+            self._set_color(got[1])
+
+    def get(self):
+        def _num(s):
+            s = (s or "").strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+        return dict(title_on=bool(self.v_title_on.get()),
+                    title=self.v_title.get(),
+                    xlabel=self.v_xlabel.get().strip(),
+                    ylabel=self.v_ylabel.get().strip(),
+                    xlim=(_num(self.v_x0.get()), _num(self.v_x1.get())),
+                    ylim=(_num(self.v_y0.get()), _num(self.v_y1.get())),
+                    color=self.color,
+                    labels=bool(self.v_labels.get()),
+                    font=(self.v_font.get()
+                          if self.v_font.get() not in ("", "默认")
+                          else None),
+                    fsize=self._fnum())
+
+    def _fnum(self):
+        try:
+            return min(max(float(self.v_fsize.get()), 6.0), 24.0)
+        except ValueError:
+            return None
+
+
+def paint_bar_ax(ax, labels, vals, st):
+    """按 BarStylePanel 的样式 dict 在 ax 上画柱状图（两个弹窗共用）。"""
+    import numpy as np
+    n = len(labels)
+    x = np.arange(n)
+    v = np.array(vals, dtype=float)
+    fam = st.get("font") or None          # None = matplotlib 默认字体
+    try:
+        fsz = min(max(float(st.get("fsize") or 9), 6.0), 24.0)
+    except (TypeError, ValueError):
+        fsz = 9.0
+    ax.clear()
+    ax.set_facecolor("#FFFFFF")
+    for sp_ in ("top", "right"):
+        ax.spines[sp_].set_visible(False)
+    for sp_ in ("left", "bottom"):
+        ax.spines[sp_].set_color("#E1E7EF")
+    ax.tick_params(colors="#6B7280", labelsize=fsz, length=0)
+    ax.bar(x, v, width=(0.62 if n <= 16 else 0.42),
+           color=st.get("color") or "#2563EB", linewidth=0)
+    ax.set_xticks(x)
+    if n <= 20:
+        ax.set_xticklabels(labels, rotation=0, ha="center",
+                           fontsize=fsz, fontfamily=fam)
+    else:
+        ax.set_xticklabels([])
+    if st.get("labels"):
+        for xi, vv in zip(x, v):
+            ax.text(xi, vv, "%.4g" % vv, ha="center", va="bottom",
+                    fontsize=fsz - 1, color="#6B7280", fontfamily=fam)
+    if st.get("xlabel"):
+        ax.set_xlabel(st["xlabel"], fontsize=fsz, color="#374151",
+                      fontfamily=fam)
+    elif n > 20:
+        ax.set_xlabel("共 %d 项 · 名称过多已隐藏" % n,
+                      fontsize=fsz - 1, color="#6B7280", labelpad=6,
+                      fontfamily=fam)
+    if st.get("ylabel"):
+        ax.set_ylabel(st["ylabel"], fontsize=fsz, color="#374151",
+                      fontfamily=fam)
+    for _t in ax.get_yticklabels():
+        _t.set_fontfamily(fam)
+    ax.yaxis.grid(True, color="#E1E7EF", linewidth=0.8)
+    ax.set_axisbelow(True)
+    topv = float(v.max()) if n and v.size else 1.0
+    yl = st.get("ylim") or (None, None)
+    if yl[0] is not None or yl[1] is not None:
+        ax.set_ylim(yl[0] if yl[0] is not None else 0.0,
+                    yl[1] if yl[1] is not None
+                    else (topv * 1.18 if topv > 0 else 1.0))
+    else:
+        ax.set_ylim(0, topv * 1.18 if topv > 0 else 1.0)
+    xl = st.get("xlim") or (None, None)
+    if xl[0] is not None or xl[1] is not None:
+        ax.set_xlim(xl[0] if xl[0] is not None else -0.8,
+                    xl[1] if xl[1] is not None else max(n - 0.2, 0.2))
+    if st.get("title_on") and (st.get("title") or "").strip():
+        ax.set_title(st["title"], pad=12, fontsize=fsz + 2,
+                     color="#1F2937", fontfamily=fam)
+
+
+
 class App:
     def __init__(self, root, cfg):
         self.root = root
@@ -1079,6 +1277,43 @@ class App:
                   self.v_fpl):
             ttk.Label(r2, textvariable=v).pack(side="left", padx=(0, 16))
 
+        # 求解点：层级树 Setup ▸ Freq ▸ 参数（可多组）▸ 取值
+        r3 = ttk.Frame(top)
+        r3.pack(fill="both", expand=False, padx=6, pady=(2, 6))
+        _l3 = ttk.Frame(r3)
+        _l3.pack(side="left", fill="y")
+        ttk.Label(_l3, text="求解点:").pack(anchor="w")
+        ttk.Button(_l3, text="全部展开", width=9,
+                   command=lambda: self._var_expand_all(True)).pack(
+            pady=(4, 2))
+        ttk.Button(_l3, text="全部折叠", width=9,
+                   command=lambda: self._var_expand_all(False)).pack()
+        _m3 = ttk.Frame(r3)
+        _m3.pack(side="left", fill="both", expand=True, padx=(6, 6))
+        self.tree_var = ttk.Treeview(_m3, show="tree", height=4,
+                                     selectmode="browse")
+        _vsb = ttk.Scrollbar(_m3, orient="vertical",
+                             command=self.tree_var.yview)
+        self.tree_var.configure(yscrollcommand=_vsb.set)
+        self.tree_var.pack(side="left", fill="both", expand=True)
+        _vsb.pack(side="left", fill="y")
+        self.tree_var.bind("<<TreeviewSelect>>", self._var_on_select)
+        _r3 = ttk.Frame(r3)
+        _r3.pack(side="left", fill="both", expand=True)
+        ttk.Label(_r3, text="层级：Setup ▸ Freq ▸ 参数 ▸ 取值",
+                  style="Muted.TLabel").pack(anchor="w")
+        self.v_varst = tk.StringVar(value="")
+        ttk.Label(_r3, textvariable=self.v_varst, style="Muted.TLabel",
+                  wraplength=360, justify="left").pack(anchor="w", pady=(4, 0))
+        self.varcols = {}      # 变量取值列（Freq/参数）
+        self.varunsolved = []  # 已定义但未求解的参数扫描变量
+        self.varhist = []      # 历史多取值列（不作参数）
+        self.varsolved = {}    # 参数 -> 已求解取值
+        self.var_pins = []     # 当前选择的引脚 [(参数, 取值), ...]
+        self.var_nodes = {}    # iid -> (kind, payload)
+        self.varinfo = {}      # "setup : sweep" -> [已求解 variation, ...]
+        self.var_cur = None
+
 
         # ---------------- 剖面 & 场计算器变量（2026-09-10 由原独立 tab 迁入，
         #                 总览的子 tab：左 = 子 tab 导航，右 = 对应栈内容）
@@ -1146,6 +1381,10 @@ class App:
                                    command=self.do_delsec, state="disabled",
                                    style="Danger.TButton")
         self.b_delsec.pack(side="right")
+        self.b_oldsec = ttk.Button(fsec, text="添加前缀",
+                                   command=self.do_oldsec, state="disabled",
+                                   style="Accent.TButton")
+        self.b_oldsec.pack(side="right", padx=(0, 6))
 
         # 子 tab 1：场计算器变量（原 Tab 4 迁入，行为不变）
         pg_expr = _sub_add("场计算器变量", "cil-code")
@@ -1167,7 +1406,51 @@ class App:
                                 style="Danger.TButton")
         self.b_del.pack(side="right")
 
+        # 子 tab 2：report（报表；删除 = 删 Maxwell 报表）
+        pg_rep = _sub_add("report", "cil-equalizer")
+        self.sp_rep = StackPanel(pg_rep, left_title="全部报表",
+                                 right_title="待删除（已入栈）",
+                                 on_change=self._sync_rep, show_cu=False)
+        self.sp_rep.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        frep = ttk.Frame(pg_rep)
+        frep.pack(fill="x", padx=6, pady=(0, 6))
+        self.v_repinfo = tk.StringVar(value="未扫描")
+        ttk.Label(frep, textvariable=self.v_repinfo,
+                  style="Muted.TLabel").pack(side="left")
+        self.v_rpsave = tk.BooleanVar(value=True)
+        ttk.Checkbutton(frep, text="删除后保存工程",
+                        variable=self.v_rpsave).pack(side="left", padx=12)
+        self.b_delrep = ttk.Button(frep, text="删除选中报表",
+                                   command=self.do_delreports,
+                                   state="disabled",
+                                   style="Danger.TButton")
+        self.b_delrep.pack(side="right")
+
+        # 子 tab 3：场图（删除 = 删 FieldsReporter 场图）
+        pg_fp = _sub_add("场图", "cil-view-quilt")
+        self.sp_fp = StackPanel(pg_fp, left_title="全部场图",
+                                right_title="待删除（已入栈）",
+                                on_change=self._sync_fp, show_cu=False)
+        self.sp_fp.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        ffp = ttk.Frame(pg_fp)
+        ffp.pack(fill="x", padx=6, pady=(0, 6))
+        self.v_fpinfo = tk.StringVar(value="未扫描")
+        ttk.Label(ffp, textvariable=self.v_fpinfo,
+                  style="Muted.TLabel").pack(side="left")
+        self.v_fpsave = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ffp, text="删除后保存工程",
+                        variable=self.v_fpsave).pack(side="left", padx=12)
+        self.b_delfp = ttk.Button(ffp, text="删除选中场图",
+                                  command=self.do_delfplots,
+                                  state="disabled",
+                                  style="Danger.TButton")
+        self.b_delfp.pack(side="right")
+
         self._sub_select(0)
+        try:
+            self._var_select_default()      # 组件初始化即落实默认选中
+        except Exception:
+            pass
 
         # ---- Tab 1: OhmicLoss
         t1 = ttk.Frame(nb.body)
@@ -1219,6 +1502,9 @@ class App:
                   "第二步：入栈后从缓存出图，不再访问 AEDT")
         ttk.Label(f8, textvariable=self.v_barinfo,
                   style="Muted.TLabel").pack(side="left", padx=6)
+        self.v_barpt = tk.StringVar(value="求解点: -")
+        ttk.Label(f8, textvariable=self.v_barpt,
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
         self.bar_data = None
         self.bar_pool = None
         self._bar_report = ""
@@ -1226,6 +1512,15 @@ class App:
         self._bar_des = ""
         self._barwin = None
         self._bar_fig = None
+        self.bar_points = []        # 求解点标签列表（总报表缓存）
+        self.bar_series = {}        # {实体: [各求解点取值，无效为 None]}
+        self._bar_point_sel = None  # 入栈时用户明确选择的求解点索引
+        self._bar_point_label = None
+        # 入栈时显式选择求解点（覆盖 入栈>>/全部入栈/双击入栈 三个入口）
+        self._bar_push_orig = self.sp_bar.push
+        self._bar_push_all_orig = self.sp_bar.push_all
+        self.sp_bar.push = self._bar_push_with_point
+        self.sp_bar.push_all = self._bar_push_all_with_point
         self._bar_sweep = "?"
         self._bar_freq = None
         self.cur_data = None          # (labels, rms, peak, proj, dsn, setup)
@@ -2537,6 +2832,15 @@ class App:
         self.b_delsec.configure(state="disabled" if running else
                                 ("normal" if self.sp_sec.rbox.size()
                                  else "disabled"))
+        self.b_oldsec.configure(state="disabled" if running else
+                                ("normal" if self.sp_sec.rbox.size()
+                                 else "disabled"))
+        self.b_delrep.configure(state="disabled" if running else
+                                ("normal" if self.sp_rep.rbox.size()
+                                 else "disabled"))
+        self.b_delfp.configure(state="disabled" if running else
+                               ("normal" if self.sp_fp.rbox.size()
+                                else "disabled"))
         self.b_j.configure(state="disabled" if running else
                             ("normal" if self.sp_j.rbox.size() else "disabled"))
         self.b_temp.configure(state="disabled" if running else
@@ -2585,8 +2889,9 @@ class App:
 
     def _sync_sec(self):
         if not self.runner.running:
-            self.b_delsec.configure(
-                state="normal" if self.sp_sec.rbox.size() else "disabled")
+            _st = "normal" if self.sp_sec.rbox.size() else "disabled"
+            self.b_delsec.configure(state=_st)
+            self.b_oldsec.configure(state=_st)
 
     def do_delsec(self):
         names = list(self.sp_sec.stack)
@@ -2611,6 +2916,283 @@ class App:
             argv.append("--no-save")
         self.runner.start(argv, tag="delsheets")
 
+    def do_oldsec(self):
+        """给栈中片体加 OLD_ 前缀（改名不删除）。"""
+        names = list(self.sp_sec.stack)
+        if not names:
+            messagebox.showinfo("提示", "先把要加前缀的片体入栈")
+            return
+        todo = [n for n in names if not n.startswith("OLD_")]
+        already = [n for n in names if n.startswith("OLD_")]
+        if not todo:
+            messagebox.showinfo("提示", "选中的片体都已带 OLD_ 前缀")
+            return
+        if not messagebox.askyesno(
+                "确认添加前缀",
+                "将把以下 %d 个片体改名为 OLD_ 前缀：\n\n%s\n\n"
+                "设计：%s / %s\n\n"
+                "只改名、不删除，不动网格、不影响已求解结果；\n"
+                "OLD_ 前缀的剖面不再被电流积分视为已有剖面。%s"
+                % (len(todo),
+                   "\n".join(todo[:15]) +
+                   ("\n…" if len(todo) > 15 else ""),
+                   self.state.get("project", "?"),
+                   self.state.get("design", "?"),
+                   ("\n\n（另有 %d 个已带 OLD_ 前缀，将跳过）" % len(already))
+                   if already else "")):
+            return
+        self.sp_sec.clear()
+        argv = [self.pyaedt_py.get(), BACKEND, "oldprefix", "--port",
+                GRPC_PORT, "--objects", ",".join(todo)]
+        if not self.v_ssave.get():
+            argv.append("--no-save")
+        self.runner.start(argv, tag="oldprefix")
+
+    # ---------------- 求解点层级树（Setup ▸ Freq ▸ 参数（多组）▸ 取值）
+    def _var_rebuild_tree(self):
+        """按 self.varcols / varunsolved / setups 重建求解点树。
+
+        Setup
+        └─ Freq 点（无频率维度时给"（单频点）"占位）
+           ├─ 参数 A（多组并列；未求解的带"（未求解）"后缀）
+           │  └─ 取值（叶子，可选中作为求解点）
+           └─ 参数 B
+              └─ 取值
+        """
+        tv = self.tree_var
+        tv.delete(*tv.get_children())
+        self.var_nodes = {}
+        setups = [str(x) for x in (self.state.get("setups") or [])]
+        if not setups:
+            if not self.varcols:        # 无 setup 且无取值列 -> 树留空
+                self.var_cur = None
+                self.v_varst.set("单点解 / 无扫频")
+                return
+            setups = ["Setup1"]         # 有取值列但拿不到 setup 名时的兜底
+        freqs = list(self.varcols.get("Freq") or [])
+        # 参数顺序 = 扫描定义的顺序（varcols 插入序），不按字母重排
+        params = [k for k in self.varcols if k != "Freq"]
+        unsolved = set(self.varunsolved or [])
+        # 全部参数首值组合（默认选中的求解点）：每个参数取第一个已求解取值
+        first_pins, first_ok = [], True
+        for p in params:
+            _vals = list(self.varcols.get(p) or [])
+            _sol = list(self.varsolved.get(p) or [])
+            _pick = None
+            for v in _vals:
+                if p in unsolved or (_sol and str(v) not in _sol):
+                    continue
+                _pick = str(v)
+                break
+            if _pick is None:
+                _pick = str(_vals[0]) if _vals else ""
+                first_ok = False
+            first_pins.append((p, _pick))
+        for s in setups:
+            sid = tv.insert("", "end", text=s, open=True)
+            self.var_nodes[sid] = ("setup", s)
+            for f in (freqs or ["（单频点）"]):
+                fid = tv.insert(sid, "end", text=f, open=(len(params) <= 1))
+                self.var_nodes[fid] = ("freq", (s, f if freqs else ""))
+                if params:
+                    _lbl = "▣ 全部参数首值：%s" % ", ".join(
+                        "%s=%s" % (p, v) for p, v in first_pins)
+                    if not first_ok:
+                        _lbl += "（未求解）"
+                    cid = tv.insert(fid, 0, text=_lbl, open=False)
+                    self.var_nodes[cid] = (
+                        "combo", (s, f if freqs else "", list(first_pins),
+                                  first_ok))
+                for p in params:
+                    lbl = ("%s（未求解）" % p) if p in unsolved else p
+                    pid = tv.insert(fid, "end", text=lbl, open=False)
+                    self.var_nodes[pid] = ("param", (s, f if freqs else "", p))
+                    _sol = list(self.varsolved.get(p) or [])
+                    for v in (self.varcols.get(p) or []):
+                        vs = str(v)
+                        # 参数整组未求解时只在参数节点标注；否则逐个标注
+                        if p not in unsolved and _sol and vs not in _sol:
+                            vs_lbl = "%s（未求解）" % vs
+                        else:
+                            vs_lbl = vs
+                        vid = tv.insert(pid, "end", text=vs_lbl)
+                        self.var_nodes[vid] = ("value",
+                                               (s, f if freqs else "", p,
+                                                vs))
+
+    def _var_expand_all(self, open_=True):
+        """全部展开 / 全部折叠。"""
+
+        def _walk(iid):
+            for c in self.tree_var.get_children(iid):
+                self.tree_var.item(c, open=bool(open_))
+                _walk(c)
+        _walk("")
+
+    def _var_select_default(self):
+        """默认选中：**第一个 Freq 选项下的第一个可选项**（freq 取列表第一个）。
+
+        优先级：第一个 Freq 下的「▣ 全部参数首值」组合（可用时）
+              -> 该 Freq 下第一个已求解取值
+              -> 该 Freq 节点本身
+        没有频率维度时退回：第一个组合 -> 第一个已求解取值 -> 第一个叶子。
+        建树完成（组件初始化）后立即调用，保证默认值生效并展开可见。
+        """
+        # 1) 第一个有频率值的 Freq 节点
+        first_freq = None
+        for iid, (kind, payload) in self.var_nodes.items():
+            if kind == "freq" and payload[1]:
+                first_freq = iid
+                break
+
+        target = None
+        if first_freq is not None:
+            # 该 Freq 的**全部后代**（含参数下的取值叶子），按树内顺序
+            desc = list(self._var_walk(first_freq))
+            for c in desc:                      # 组合点优先
+                k, pl = self.var_nodes.get(c, (None, None))
+                if k == "combo" and pl[3]:
+                    target = c
+                    break
+            if target is None:                  # 其后第一个已求解取值
+                for c in desc:
+                    k, pl = self.var_nodes.get(c, (None, None))
+                    if k != "value":
+                        continue
+                    _s, _f, _p, _v = pl
+                    _sol = list(self.varsolved.get(_p) or [])
+                    if _p not in (self.varunsolved or []) and \
+                            (not _sol or _v in _sol):
+                        target = c
+                        break
+            if target is None and not any(
+                    self.var_nodes.get(c, (None, None))[0] == "value"
+                    for c in desc):
+                target = first_freq               # 无取值可选 -> 选 Freq 本身
+
+        # 2) 兜底（无频率维度 / 上述都没命中）
+        if target is None:
+            first_freq2, first_leaf, first_val, first_combo = \
+                None, None, None, None
+            for iid, (kind, payload) in self.var_nodes.items():
+                if kind == "combo" and payload[3] and first_combo is None:
+                    first_combo = iid
+                if kind == "freq" and payload[1] and first_freq2 is None:
+                    first_freq2 = iid
+                elif kind == "value":
+                    if first_leaf is None:
+                        first_leaf = iid
+                    if first_val is None:
+                        _s, _f, _p, _v = payload
+                        _sol = list(self.varsolved.get(_p) or [])
+                        if _p not in (self.varunsolved or []) and \
+                                (not _sol or _v in _sol):
+                            first_val = iid
+            target = first_combo or first_val or first_freq2 or first_leaf
+
+        if target:
+            self._var_open_path(target)
+            self.tree_var.selection_set(target)
+            self.tree_var.see(target)
+            self._var_on_select()
+        else:
+            self.var_cur = None
+            self.var_pins = []
+            self.v_varst.set("单点解 / 无扫频")
+
+    def _var_walk(self, iid):
+        """深度优先遍历 iid 的后代（按树内顺序），生成器。"""
+        for c in self.tree_var.get_children(iid):
+            yield c
+            for d in self._var_walk(c):
+                yield d
+
+    def _var_open_path(self, iid):
+        """展开 iid 的所有祖先节点，保证选中项在树里可见。"""
+        p = self.tree_var.parent(iid)
+        while p:
+            self.tree_var.item(p, open=True)
+            p = self.tree_var.parent(p)
+
+    def _var_on_select(self, _e=None):
+        """选中节点 -> 更新状态标签与 var_cur。"""
+        sel = self.tree_var.selection()
+        if not sel:
+            self.var_cur = None
+            self.var_pins = []
+            self.v_varst.set("")
+            return
+        kind, payload = self.var_nodes.get(sel[0], (None, None))
+        if kind == "combo":
+            s, f, pins, ok = payload
+            if not ok:
+                self.var_cur = None
+                self.var_pins = []
+                self.v_varst.set("⚠ 未求解：%s 的「参数首值组合」"
+                                 "尚未求解" % s)
+            else:
+                self.var_pins = list(pins)
+                self.var_cur = (
+                    "%s : %s" % (s, "+".join(p for p, _ in pins)),
+                    ", ".join("%s=%s" % (p, v) for p, v in pins))
+                _extra = " | Freq=%s" % f if f else ""
+                self.v_varst.set(
+                    "已求解 · %s = %s%s"
+                    % (s, ", ".join("%s=%s" % (p, v) for p, v in pins),
+                       _extra))
+            if getattr(self, "bar_points", None) and hasattr(self, "v_barpt"):
+                if self.var_cur:
+                    _ok2, _msg2 = self._bar_sync_point_from_overview()
+                    self.v_barpt.set("求解点: %s"
+                                     % (_msg2 if _ok2 else "未匹配（见缓存）"))
+                else:
+                    self.v_barpt.set("求解点: -")
+            return
+        if kind == "value":
+            s, f, p, v = payload
+            _sol = list(self.varsolved.get(p) or [])
+            if p in (self.varunsolved or []) or (_sol and v not in _sol):
+                self.var_cur = None
+                self.var_pins = []
+                self.v_varst.set("⚠ 未求解：%s = %s 只有扫描定义，"
+                                 "请先求解该参数扫描" % (p, v))
+            else:
+                self.var_cur = ("%s : %s" % (s, p), v)
+                self.var_pins = [(p, v)]
+                extra = " | Freq=%s" % f if f else ""
+                self.v_varst.set("已求解 · %s : %s = %s%s"
+                                 % (s, p, v, extra))
+        elif kind == "freq":
+            s, f = payload
+            if not f:
+                self.var_cur = None
+                self.v_varst.set("⚠ 该设计没有频率维度（单频点）")
+            else:
+                self.var_cur = ("%s : Freq" % s, f)
+                self.var_pins = [("Freq", f)]
+                self.v_varst.set("已求解 · %s | Freq=%s" % (s, f))
+        elif kind == "param":
+            s, f, p = payload
+            self.var_cur = None
+            self.var_pins = []
+            self.v_varst.set("已选参数 %s —— 请展开选择具体取值" % p)
+        else:
+            self.var_cur = None
+            self.var_pins = []
+            self.v_varst.set("已选 %s —— 请展开选择 Freq / 参数取值" % payload)
+        # 损耗柱状图状态标签跟随
+        if getattr(self, "bar_points", None) and hasattr(self, "v_barpt"):
+            if self.var_cur:
+                _ok, _msg = self._bar_sync_point_from_overview()
+                self.v_barpt.set("求解点: %s"
+                                 % (_msg if _ok else "未匹配（见缓存）"))
+            else:
+                self.v_barpt.set("求解点: -")
+
+    def _var_apply(self, _e=None):
+        """兼容旧调用名：等价于按当前树选中项刷新。"""
+        self._var_on_select()
+
     def _sync_j(self):
         if not self.runner.running:
             self.b_j.configure(state="normal" if self.sp_j.rbox.size()
@@ -2625,17 +3207,110 @@ class App:
         if not messagebox.askyesno(
                 "确认 — 生成/刷新总报表",
                 "设计：%s / %s\n\n"
-                "一次性读取场计算器全部 OhmicLoss_* 表达式数值\n"
-                "（只读，不动解、不动网格）+ 建/复用总报表 LossBar_All。\n"
+                "优先从已有报表 LossBar_All 直读（秒级；只读，"
+                "不动解、不动网格）。\n"
+                "报表不存在时才完整取数并创建（首次较慢）。\n"
                 "之后入栈实体画柱状图直接读 GUI 缓存，零 AEDT 交互。"
                 % (self.state.get("project", "?"),
                    self.state.get("design", "?"))):
             return
         argv = [self.pyaedt_py.get(), BACKEND, "barloss-all",
-                "--port", GRPC_PORT]
+                "--port", GRPC_PORT,
+                "--project", self.state.get("project", ""),
+                "--design", self.state.get("design", "")]
+        if self.var_cur:
+            argv += ["--setup", self.var_cur[0].split(" : ")[0]]
         if not self.v_bsave.get():
             argv.append("--no-save")
         self.runner.start(argv, tag="barall")
+
+    @staticmethod
+    def _freq_hz(txt):
+        """把 '650kHz' / '1MHz' / '650000Hz' 解析成 Hz；失败返回 None。"""
+        m = re.match(r"^\s*([0-9.eE+-]+)\s*([A-Za-z]*)\s*$", str(txt))
+        if not m:
+            return None
+        try:
+            v = float(m.group(1))
+        except ValueError:
+            return None
+        scale = {"": 1.0, "hz": 1.0, "khz": 1e3, "mhz": 1e6,
+                 "ghz": 1e9}.get(m.group(2).lower())
+        return None if scale is None else v * scale
+
+    def _bar_sync_point_from_overview(self):
+        """把入栈求解点对齐到总览页当前选择；返回 (ok, msg)。
+
+        总览选择可能是"全部参数首值"组合（多条引脚）——逐个引脚值与缓存求解点
+        标签做数值/包含匹配；都不中且缓存只有单点时代入该单点（无歧义）。
+        匹配不上返回 False（调用方提示），绝不弹窗让用户重新选。
+        """
+        pts = self.bar_points or []
+        if not pts:
+            return False, ("总报表缓存里没有求解点数据——请先点"
+                           "【生成/刷新总报表】")
+        if not self.var_cur:
+            return False, ("总览页还没有选择求解点（单点解或无扫频）；"
+                           "缓存里有: %s" % ", ".join(pts[:8]))
+        _pins = list(getattr(self, "var_pins", None) or [])
+        if _pins:
+            vals = [str(v) for _p, v in _pins]
+        else:
+            vals = [str(self.var_cur[1])]
+        for val0 in vals:
+            _hit = self._match_pt(pts, val0)
+            if _hit is not None:
+                i, p = _hit
+                self._bar_point_sel = i
+                self._bar_point_label = p
+                return True, p
+        if len(pts) == 1:
+            # 缓存只有单点：组合点无法逐值匹配时直接采用该点（无歧义）
+            self._bar_point_sel = 0
+            self._bar_point_label = pts[0]
+            return True, pts[0]
+        return False, ("总览页所选求解点 %s 不在总报表缓存里（缓存: %s）"
+                       "——请重新【生成/刷新总报表】"
+                       % (", ".join(vals), ", ".join(pts[:8])))
+
+    def _match_pt(self, pts, val):
+        """在缓存求解点里找与 val 数值/字符串匹配的一项，返回 (索引, 标签)。"""
+        val = str(val).replace(" ", "")
+        vnum = self._freq_hz(val)
+        for i, p in enumerate(pts):
+            q = p.replace(" ", "")
+            # 1) 数值优先：650kHz / 650000Hz 等不同写法也能匹配
+            if vnum is not None:
+                pnum = self._freq_hz(q)
+                if pnum is not None and abs(pnum - vnum) <= \
+                        max(1e-6 * max(abs(pnum), abs(vnum)), 1e-6):
+                    return i, p
+            # 2) 兜底：字符串包含
+            if val and (val in q or q in val):
+                return i, p
+        return None
+
+    def _bar_push_with_point(self):
+        ok, msg = self._bar_sync_point_from_overview()
+        if not ok:
+            self.log("!! 入栈取消：%s" % msg, "err")
+            messagebox.showwarning("求解点不匹配", msg)
+            return
+        self._bar_point_label = msg
+        self.log("损耗柱状图入栈：求解点 = %s（取自总览页选择）" % msg)
+        self.v_barpt.set("求解点: %s" % msg)
+        self._bar_push_orig()
+
+    def _bar_push_all_with_point(self):
+        ok, msg = self._bar_sync_point_from_overview()
+        if not ok:
+            self.log("!! 全部入栈取消：%s" % msg, "err")
+            messagebox.showwarning("求解点不匹配", msg)
+            return
+        self._bar_point_label = msg
+        self.log("损耗柱状图全部入栈：求解点 = %s（取自总览页选择）" % msg)
+        self.v_barpt.set("求解点: %s" % msg)
+        self._bar_push_all_orig()
 
     def do_barloss(self):
         objs = self.sp_bar.stack
@@ -2656,22 +3331,62 @@ class App:
                         "请重新【生成/刷新总报表】"
                         % (self._bar_proj, self._bar_des))
             return
-        miss = [o for o in objs if o not in pool]
-        if miss:
-            messagebox.showwarning(
-                "缓存缺少实体",
-                "以下 %d 个实体不在总报表缓存中：\n%s\n\n"
-                "可能刚创建了新表达式——请点【生成/刷新总报表】。"
-                % (len(miss), ", ".join(miss[:12]) +
-                   ("…" if len(miss) > 12 else "")))
-            return
-        vals = [pool[o] for o in objs]
+
+        # 求解点：入栈时已明确选择；未选（旧缓存/直接出图）则此时强制选择
+        use_series = bool(self.bar_points) and bool(self.bar_series)
+        idx = self._bar_point_sel
+        if use_series:
+            # 求解点以总览页选择为准（不弹窗）
+            ok, msg = self._bar_sync_point_from_overview()
+            if not ok:
+                self.log("!! 出图取消：%s" % msg, "err")
+                messagebox.showwarning("求解点不匹配", msg)
+                return
+            idx = self._bar_point_sel
+            self.v_barpt.set("求解点: %s" % msg)
+            pt = self.bar_points[idx]
+            good, miss = [], []
+            for o in objs:
+                seq = self.bar_series.get(o) or []
+                v = seq[idx] if idx < len(seq) else None
+                if v is None:
+                    miss.append(o)
+                else:
+                    good.append((o, v))
+            if miss:
+                messagebox.showwarning(
+                    "所选求解点无数据",
+                    "求解点 %s 下以下实体没有数据（已从图中剔除）：\n%s"
+                    % (pt, ", ".join(miss[:12]) +
+                       ("…" if len(miss) > 12 else "")))
+            if not good:
+                messagebox.showinfo(
+                    "提示", "求解点 %s 下没有任何所选实体的数据" % pt)
+                return
+            objs = [o for o, _ in good]
+            vals = [v for _, v in good]
+            self._bar_point_label = pt
+        else:
+            miss = [o for o in objs if o not in pool]
+            if miss:
+                messagebox.showwarning(
+                    "缓存缺少实体",
+                    "以下 %d 个实体不在总报表缓存中：\n%s\n\n"
+                    "可能刚创建了新表达式——请点【生成/刷新总报表】。"
+                    % (len(miss), ", ".join(miss[:12]) +
+                       ("…" if len(miss) > 12 else "")))
+                return
+            vals = [pool[o] for o in objs]
+            self._bar_point_label = None
+
         total = sum(vals)
         self.bar_data = (objs, vals, total, self._bar_report,
                          self._bar_proj, self._bar_des)
         self._open_bar_window()
-        self.log("已从总报表缓存出图：%d 个实体，Σ = %.6g W（无 AEDT 交互）"
-                 % (len(objs), total), "ok")
+        self.log("已从总报表缓存出图：%d 个实体，求解点 %s，Σ = %.6g W"
+                 "（无 AEDT 交互）"
+                 % (len(objs), self._bar_point_label or self._bar_sweep,
+                    total), "ok")
 
     def _parse_lossbarall_from_log(self):
         txt = self.txt.get("1.0", tk.END)
@@ -2694,15 +3409,72 @@ class App:
         self._bar_des = str(d.get("design", ""))
         self._bar_sweep = str(d.get("sweep", "?"))
         self._bar_freq = d.get("freq")
+        self.bar_points = [str(x) for x in (d.get("points") or [])]
+        self.bar_series = {str(k): list(v)
+                           for k, v in (d.get("series") or {}).items()}
+        self._bar_point_sel = None
+        self._bar_point_label = None
+        if self.bar_points and self.var_cur:
+            _ok, _msg = self._bar_sync_point_from_overview()
+            if hasattr(self, "v_barpt"):
+                self.v_barpt.set("求解点: %s"
+                                 % (_msg if _ok else "未匹配（见缓存）"))
         xf = ""
         if self._bar_sweep == "Freq" and self._bar_freq is not None:
             xf = " | Freq=%g" % self._bar_freq
-        self.v_barinfo.set("总报表 %s | 缓存 %d 个表达式 | X=%s%s"
+        _npt = (" | 求解点 %d 个" % len(self.bar_points))
+        self.v_barinfo.set("总报表 %s | 缓存 %d 个表达式 | X=%s%s%s"
                            % (self._bar_report or "-", len(self.bar_pool),
-                              self._bar_sweep, xf))
+                              self._bar_sweep, xf, _npt))
         self.log("总报表缓存已就绪：%d 个 OhmicLoss_* 表达式——"
                  "入栈实体后点【从缓存生成柱状图】，零 AEDT 交互"
                  % len(self.bar_pool), "ok")
+
+    def _edit_bar_labels(self, win, cur, orig, on_apply):
+        """柱标签编辑对话框：每行一个标签，与柱子从左到右一一对应。"""
+        dlg = tk.Toplevel(win)
+        dlg.title("编辑柱标签")
+        dlg.geometry("420x560")
+        dlg.transient(win)
+        dlg.configure(bg="#F5F7FA")
+        top = ttk.Frame(dlg)
+        top.pack(fill="x", padx=10, pady=(8, 4))
+        ttk.Label(top, text="每行一个标签，按柱子从左到右顺序（共 %d 行，"
+                            "空行也占一行）" % len(cur),
+                  style="Muted.TLabel").pack(side="left")
+        tx = tk.Text(dlg, wrap="none", bg="#FFFFFF", fg="#1F2937",
+                     relief="flat")
+        tx.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        for _s in cur:
+            tx.insert(tk.END, _s + "\n")
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=10, pady=(0, 10))
+
+        def _apply():
+            lines = tx.get("1.0", "end").split("\n")
+            while lines and lines[-1] == "":
+                lines.pop()      # Tk Text 末尾自带隐式换行，可能不止一个
+            if len(lines) != len(cur):
+                messagebox.showinfo(
+                    "行数不符",
+                    "需要 %d 行（与柱子数一致），当前 %d 行。\n"
+                    "每行一个标签，空行也占一行。"
+                    % (len(cur), len(lines)))
+                return
+            on_apply([s.strip() for s in lines])
+            dlg.destroy()
+
+        def _reset():
+            tx.delete("1.0", "end")
+            for _s in orig:
+                tx.insert(tk.END, _s + "\n")
+
+        ttk.Button(btns, text="恢复原名", command=_reset).pack(side="left")
+        ttk.Button(btns, text="取消",
+                   command=dlg.destroy).pack(side="right", padx=(0, 6))
+        ttk.Button(btns, text="应用", command=_apply,
+                   style="Accent.TButton").pack(side="right")
+        dlg.grab_set()
 
     def _open_bar_window(self):
         if not self.bar_data:
@@ -2715,25 +3487,100 @@ class App:
             old.lift()
             return
         objs, vals, total, rep, proj, dsn = self.bar_data
+        n = len(objs)
+        barlabels = list(objs)
+        xinfo = ""
+        if self._bar_sweep == "Freq" and self._bar_freq is not None:
+            xinfo = " | Freq = %g" % self._bar_freq
+        pt_lab = getattr(self, "_bar_point_label", None)
+
+        def_title = ("栈内总损耗 Σ = %.6g W（%d 个实体）%s"
+                     % (total, n, xinfo))
+        saved = dict(self.cfg.get("barloss_style") or {})
         win = tk.Toplevel(self.root)
         self._barwin = win
         win.title("损耗柱状图 — %s / %s" % (proj, dsn))
-        win.geometry("1280x840")
-        win.minsize(640, 420)
+        win.geometry("1280x900")
+        win.minsize(640, 480)
         win.resizable(True, True)
         win.configure(bg="#F5F7FA")
         top = ttk.Frame(win)
         top.pack(fill="x", padx=10, pady=(8, 4))
-        xinfo = ""
-        if self._bar_sweep == "Freq" and self._bar_freq is not None:
-            xinfo = " | Freq = %g" % self._bar_freq
         ttk.Label(top, text="Σ 合计 = %.6g W（%d 个实体）| 报表 %s | X=%s%s"
-                  % (total, len(objs), rep or "-", self._bar_sweep, xinfo),
+                  % (total, n, rep or "-", self._bar_sweep, xinfo),
                   style="Muted.TLabel").pack(side="left")
         ttk.Button(top, text="复制图表",
                    command=self._bar_copy).pack(side="right", padx=4)
         ttk.Button(top, text="保存…",
                    command=self._bar_save).pack(side="right")
+
+        # 求解点状态：出图时用户所选的点；窗口内可切换即时重绘
+        pt_state = {"idx": 0}
+        if pt_lab and pt_lab in (self.bar_points or []):
+            pt_state["idx"] = self.bar_points.index(pt_lab)
+
+        def _vals_now():
+            if not pt_lab or not self.bar_series:
+                return list(vals)
+            idx = pt_state["idx"]
+            out = []
+            for o in objs:
+                seq = self.bar_series.get(o) or []
+                v = seq[idx] if idx < len(seq) else None
+                out.append(v if v is not None else 0.0)
+            return out
+
+        # ---- 样式编辑：标题/轴标签/范围/柱色/数值标签，即时重绘并持久化
+        state = {"fig": None, "cv": None}
+
+        def redraw():
+            f, c = state["fig"], state["cv"]
+            if f is None or c is None:
+                return
+            f.clf()
+            ax = f.add_subplot(111)
+            paint_bar_ax(ax, barlabels, _vals_now(), panel.get())
+            f.tight_layout()
+            c.draw()
+
+        def on_style():
+            st = panel.get()
+            if (st.get("title") or "").strip() == def_title:
+                st["title"] = ""   # 标题没改过 -> 不冻结，跟随数据动态生成
+            self.cfg["barloss_style"] = st
+            save_cfg(self.cfg)           # 静默持久化，重开窗口仍生效
+            redraw()
+
+        panel = BarStylePanel(win, title=saved.get("title") or def_title,
+                              xlabel=saved.get("xlabel", ""),
+                              ylabel=saved.get("ylabel", "OhmicLoss (W)"),
+                              color=saved.get("color", "#2563EB"),
+                              show_labels=saved.get("labels", n <= 20),
+                              font=saved.get("font", ""),
+                              fsize=saved.get("fsize", 9),
+                              on_change=on_style)
+        panel.pack(fill="x", padx=10, pady=(0, 2))
+
+        # 求解点切换（缓存含多个求解点时显示）
+        if pt_lab and len(self.bar_points) > 1:
+            prow = ttk.Frame(win)
+            prow.pack(fill="x", padx=10, pady=(0, 2))
+            ttk.Label(prow, text="求解点:").pack(side="left")
+            cbp = ttk.Combobox(prow, state="readonly",
+                               values=self.bar_points, width=20)
+            cbp.set(pt_lab)
+            cbp.pack(side="left", padx=(2, 8))
+
+            def _on_pt(_e=None):
+                pt_state["idx"] = self.bar_points.index(cbp.get())
+                self._bar_point_sel = pt_state["idx"]
+                self._bar_point_label = cbp.get()
+                redraw()
+
+            cbp.bind("<<ComboboxSelected>>", _on_pt)
+            ttk.Label(prow, text="（切换后柱状图即时重绘）",
+                      style="Muted.TLabel").pack(side="left")
+
         self._bar_fig = None
         try:
             import matplotlib
@@ -2742,46 +3589,15 @@ class App:
             from matplotlib.backends.backend_tkagg import (
                 FigureCanvasTkAgg)
             from matplotlib.figure import Figure
-            import numpy as np
             fig = Figure(figsize=(9.4, 5.0), dpi=100)
             fig.patch.set_facecolor("#F5F7FA")
-            ax = fig.add_subplot(111)
-            ax.set_facecolor("#FFFFFF")
-            for sp_ in ("top", "right"):
-                ax.spines[sp_].set_visible(False)
-            for sp_ in ("left", "bottom"):
-                ax.spines[sp_].set_color("#E1E7EF")
-            ax.tick_params(colors="#6B7280", labelsize=9, length=0)
-            n = len(objs)
-            x = np.arange(n)
-            v = np.array(vals, dtype=float)
-            ax.bar(x, v, width=(0.62 if n <= 16 else 0.42),
-                   color="#2563EB", linewidth=0)
-            ax.set_xticks(x)
-            if n <= 20:
-                ax.set_xticklabels(objs, rotation=30, ha="right")
-                for xi, vv in zip(x, v):
-                    ax.text(xi, vv, "%.4g" % vv, ha="center",
-                            va="bottom", fontsize=8, color="#6B7280")
-            else:
-                ax.set_xticklabels([])
-                ax.set_xlabel("共 %d 项 · 名称过多已隐藏" % n,
-                              fontsize=8, color="#6B7280", labelpad=6)
-            ax.set_ylabel("OhmicLoss (W)")
-            ax.yaxis.grid(True, color="#E1E7EF", linewidth=0.8)
-            ax.set_axisbelow(True)
-            topv = float(v.max()) if n else 1.0
-            ax.set_ylim(0, topv * 1.18 if topv > 0 else 1.0)
-            t2 = "栈内总损耗 Σ = %.6g W（%d 个实体）" % (total, n)
-            if self._bar_sweep == "Freq" and self._bar_freq is not None:
-                t2 += " | Freq = %g" % self._bar_freq
-            ax.set_title(t2, pad=12, fontsize=11, color="#1F2937")
-            fig.tight_layout()
             cv = FigureCanvasTkAgg(fig, master=win)
-            cv.draw()
             cv.get_tk_widget().pack(fill="both", expand=True,
                                     padx=10, pady=(4, 10))
+            state["fig"] = fig
+            state["cv"] = cv
             self._bar_fig = fig
+            redraw()
         except ImportError:
             cv = tk.Canvas(win, bg="#FFFFFF", highlightthickness=0)
             cv.pack(fill="both", expand=True, padx=10, pady=(4, 10))
@@ -3093,6 +3909,60 @@ class App:
             argv.append("--no-save")
         self.runner.start(argv, tag="dropvars")
 
+    def _sync_rep(self):
+        if not self.runner.running:
+            self.b_delrep.configure(
+                state="normal" if self.sp_rep.rbox.size() else "disabled")
+
+    def _sync_fp(self):
+        if not self.runner.running:
+            self.b_delfp.configure(
+                state="normal" if self.sp_fp.rbox.size() else "disabled")
+
+    def do_delreports(self):
+        """删除入栈的报表（ReportSetup.DeleteReports）。"""
+        names = list(self.sp_rep.stack)
+        if not names:
+            messagebox.showinfo("提示", "先把要删除的报表入栈")
+            return
+        if not messagebox.askyesno(
+                "确认删除报表",
+                "将删除以下 %d 个报表：\n\n%s\n\n设计：%s / %s\n\n"
+                "只删报表本身，不动几何、网格与已求解结果。"
+                % (len(names),
+                   "\n".join(names[:15]) + ("\n…" if len(names) > 15 else ""),
+                   self.state.get("project", "?"),
+                   self.state.get("design", "?"))):
+            return
+        self.sp_rep.clear()
+        argv = [self.pyaedt_py.get(), BACKEND, "delreports", "--port",
+                GRPC_PORT, "--names", ",".join(names)]
+        if not self.v_rpsave.get():
+            argv.append("--no-save")
+        self.runner.start(argv, tag="delreports")
+
+    def do_delfplots(self):
+        """删除入栈的场图（FieldsReporter.DeleteFieldPlot）。"""
+        names = list(self.sp_fp.stack)
+        if not names:
+            messagebox.showinfo("提示", "先把要删除的场图入栈")
+            return
+        if not messagebox.askyesno(
+                "确认删除场图",
+                "将删除以下 %d 个场图：\n\n%s\n\n设计：%s / %s\n\n"
+                "只删场图本身，不动几何、网格与已求解结果。"
+                % (len(names),
+                   "\n".join(names[:15]) + ("\n…" if len(names) > 15 else ""),
+                   self.state.get("project", "?"),
+                   self.state.get("design", "?"))):
+            return
+        self.sp_fp.clear()
+        argv = [self.pyaedt_py.get(), BACKEND, "delfplots", "--port",
+                GRPC_PORT, "--names", ",".join(names)]
+        if not self.v_fpsave.get():
+            argv.append("--no-save")
+        self.runner.start(argv, tag="delfplots")
+
     @staticmethod
     def _auto_name(objs):
         nums = [o.split("_")[-1] for o in objs]
@@ -3363,7 +4233,8 @@ class App:
             if self._curbar_pending:
                 self._curbar_pending = False
                 self.root.after(300, self._curbar_decide)
-        elif tag in ("ohmic", "current", "dropvars", "delsheets") and code == 0:
+        elif tag in ("ohmic", "current", "dropvars", "delsheets", "oldprefix",
+                     "delreports", "delfplots") and code == 0:
             self.log("（自动刷新扫描结果）")
             self.root.after(300, self.do_scan)
         elif tag in ("temp", "readtemp") and code == 0:
@@ -3419,8 +4290,31 @@ class App:
             self.log("场图 (%d): %s" % (len(fpl), ", ".join(fpl)))
         self.v_status.set("就绪")
 
+        # 求解点层级树（数据源：工程文件变量列 + Optimetrics 扫描定义）
+        self.varcols = d.get("varcols") or {}
+        self.varunsolved = [str(x) for x in (d.get("varunsolved") or [])]
+        self.varhist = [str(x) for x in (d.get("varhist") or [])]
+        self.varsolved = {str(k): [str(x) for x in (v or [])]
+                          for k, v in (d.get("varsolved") or {}).items()}
+        if self.varhist:
+            self.log("参数来源: 扫描定义；历史多取值列（不作参数）: %s"
+                     % ", ".join(self.varhist))
+        try:
+            self._var_rebuild_tree()
+            self._var_select_default()
+        except Exception as e:
+            self.log("!! 求解点树构建失败: %s" % str(e)[:110], "err")
+            self.var_cur = None
+            self.v_varst.set("求解点树构建失败（见日志）")
+
         # 场计算器变量
         self.sp_expr.set_pool(d.get("expressions", []))
+        _reps = [str(x) for x in (d.get("reports") or [])]
+        _fps = [str(x) for x in (d.get("fplots") or [])]
+        self.sp_rep.set_pool(_reps)
+        self.sp_fp.set_pool(_fps)
+        self.v_repinfo.set("共 %d 个报表" % len(_reps))
+        self.v_fpinfo.set("共 %d 个场图" % len(_fps))
 
         # 候选池（排序方式见「体积排序 / 匹配」tab）
         self._apply_pools(d)
@@ -3469,6 +4363,26 @@ class App:
         self.runner.start(argv, tag="ohmic")
 
     # --------------------------------------------------------- 电流积分
+    def _sel_argv(self):
+        """总览页当前求解点 -> 后端 --setup/--var（未选择时不追加）。
+
+        每次生成 report / 读取 result 前实时读取 var_cur，
+        用户切换 setup/参数/频率后自动使用最新选择。
+        """
+        if not self.var_cur:
+            return []
+        key, val = self.var_cur
+        if " : " not in key:
+            return []
+        setup = key.split(" : ", 1)[0]
+        pins = list(getattr(self, "var_pins", None) or [])
+        if not pins:        # 兼容手工设置 var_cur 的场景
+            pins = [(key.split(" : ", 1)[1], val)]
+        argv = ["--setup", setup]
+        for p, v in pins:
+            argv += ["--var", "%s=%s" % (p, v)]
+        return argv
+
     def do_current(self):
         objs = self.sp_cur.stack
         if not objs:
@@ -3476,16 +4390,20 @@ class App:
             return
         plane = self.v_plane.get()
         rep = self.v_report.get().strip() or self._auto_name(objs)
+        _sel = (("%s = %s" % (self.var_cur[0].split(" : ")[1],
+                              self.var_cur[1]))
+                if self.var_cur else "默认（未在总览页选择）")
         if not messagebox.askyesno(
                 "确认 — 电流积分",
-                "设计：%s / %s\n实体：%s\n剖切面：%s\n报表：%s\n\n"
+                "设计：%s / %s\n实体：%s\n剖切面：%s\n报表：%s\n"
+                "求解点：%s\n\n"
                 "流程：建 Non-model 剖面 → 保留最大片 → 场计算器电流积分\n"
                 "      → Maxwell 内建 Fields Report（X=Phase）→ 正弦拟合\n"
                 "      → 结果目录指纹校验 → 保存\n\n"
                 "⚠ 剖面为 Non-model，不改变网格；但会新增 sheet 物体。"
                 % (self.state.get("project", "?"), self.state.get("design", "?"),
                    ", ".join(objs[:12]) + ("…" if len(objs) > 12 else ""),
-                   plane, rep)):
+                   plane, rep, _sel)):
             return
         argv = [self.pyaedt_py.get(), PIPELINE,
                 "--objects", ",".join(objs),
@@ -3494,6 +4412,7 @@ class App:
                 "--project", self.state.get("project", ""),
                 "--design", self.state.get("design", ""),
                 "--port", GRPC_PORT, "--no-png"]
+        argv += self._sel_argv()
         if not self.v_csave.get():
             argv.append("--no-save")
         if not self.v_cbackup.get():
@@ -3616,6 +4535,7 @@ class App:
                     "--project", self.state.get("project", ""),
                     "--design", self.state.get("design", ""),
                     "--port", GRPC_PORT]
+            argv += self._sel_argv()
             if not self.v_csave.get():
                 argv.append("--no-save")
             if not self.v_cbackup.get():
@@ -3669,6 +4589,7 @@ class App:
                 "--project", self.state.get("project", ""),
                 "--design", self.state.get("design", ""),
                 "--port", GRPC_PORT]
+        argv += self._sel_argv()
         self.runner.start(argv, tag="curbar")
 
     def _parse_curbar_from_log(self):
@@ -3718,23 +4639,69 @@ class App:
             old.lift()
             return
         labels, rms, peak, proj, dsn, setup = self.cur_data
+        n = len(labels)
+        barlabels = list(labels)
+        orig_labels = list(labels)
+        def_title = "入栈剖面电流有效值（I_peak / √2）· %d 个剖面" % n
+        saved = dict(self.cfg.get("curbar_style") or {})
         win = tk.Toplevel(self.root)
         self._curwin = win
         win.title("电流有效值柱状图 — %s / %s" % (proj, dsn))
-        win.geometry("1080x720")
-        win.minsize(560, 380)
+        win.geometry("1080x790")
+        win.minsize(560, 440)
         win.resizable(True, True)
         win.configure(bg="#F5F7FA")
         top = ttk.Frame(win)
         top.pack(fill="x", padx=10, pady=(8, 4))
         ttk.Label(top, text="ΣIrms = %.6g A（%d 个剖面）| 解 %s | "
                             "有效值 = 场计算器峰值 ÷ √2"
-                  % (sum(rms), len(labels), setup or "-"),
+                  % (sum(rms), n, setup or "-"),
                   style="Muted.TLabel").pack(side="left")
         ttk.Button(top, text="复制数据",
                    command=self._curbar_copy).pack(side="right", padx=4)
         ttk.Button(top, text="保存图片…",
                    command=self._curbar_save).pack(side="right")
+
+        # ---- 样式编辑：标题/轴标签/范围/柱色/数值标签，即时重绘并持久化
+        state = {"fig": None, "cv": None}
+
+        def redraw():
+            f, c = state["fig"], state["cv"]
+            if f is None or c is None:
+                return
+            f.clf()
+            ax = f.add_subplot(111)
+            paint_bar_ax(ax, barlabels, rms, panel.get())
+            f.tight_layout()
+            c.draw()
+
+        def on_style():
+            st = panel.get()
+            if (st.get("title") or "").strip() == def_title:
+                st["title"] = ""   # 标题没改过 -> 不冻结，跟随数据动态生成
+            self.cfg["curbar_style"] = st
+            save_cfg(self.cfg)           # 静默持久化，重开窗口仍生效
+            redraw()
+
+        panel = BarStylePanel(win, title=saved.get("title") or def_title,
+                              xlabel=saved.get("xlabel", ""),
+                              ylabel=saved.get("ylabel", "I_rms (A)"),
+                              color=saved.get("color", "#2563EB"),
+                              show_labels=saved.get("labels", n <= 20),
+                              font=saved.get("font", ""),
+                              fsize=saved.get("fsize", 9),
+                              on_change=on_style)
+        panel.pack(fill="x", padx=10, pady=(0, 2))
+
+        def _apply_labels(new):
+            barlabels[:] = new
+            redraw()
+
+        ttk.Button(panel.r2, text="柱标签…",
+                   command=lambda: self._edit_bar_labels(
+                       win, barlabels, orig_labels, _apply_labels)
+                   ).pack(side="left", padx=(10, 0))
+
         self._cur_fig = None
         try:
             import matplotlib
@@ -3743,44 +4710,15 @@ class App:
             from matplotlib.backends.backend_tkagg import (
                 FigureCanvasTkAgg)
             from matplotlib.figure import Figure
-            import numpy as np
             fig = Figure(figsize=(9.0, 4.8), dpi=100)
             fig.patch.set_facecolor("#F5F7FA")
-            ax = fig.add_subplot(111)
-            ax.set_facecolor("#FFFFFF")
-            for sp_ in ("top", "right"):
-                ax.spines[sp_].set_visible(False)
-            for sp_ in ("left", "bottom"):
-                ax.spines[sp_].set_color("#E1E7EF")
-            ax.tick_params(colors="#6B7280", labelsize=9, length=0)
-            n = len(labels)
-            x = np.arange(n)
-            v = np.array(rms, dtype=float)
-            ax.bar(x, v, width=(0.62 if n <= 16 else 0.42),
-                   color="#2563EB", linewidth=0)
-            ax.set_xticks(x)
-            if n <= 20:
-                ax.set_xticklabels(labels, rotation=30, ha="right")
-                for xi, vv in zip(x, v):
-                    ax.text(xi, vv, "%.4g" % vv, ha="center", va="bottom",
-                            fontsize=8, color="#6B7280")
-            else:
-                ax.set_xticklabels([])
-                ax.set_xlabel("共 %d 项 · 名称过多已隐藏" % n,
-                              fontsize=8, color="#6B7280", labelpad=6)
-            ax.set_ylabel("I_rms (A)")
-            ax.yaxis.grid(True, color="#E1E7EF", linewidth=0.8)
-            ax.set_axisbelow(True)
-            topv = float(v.max()) if n else 1.0
-            ax.set_ylim(0, topv * 1.18 if topv > 0 else 1.0)
-            ax.set_title("入栈剖面电流有效值（I_peak / √2）· %d 个剖面"
-                         % n, pad=12, fontsize=11, color="#1F2937")
-            fig.tight_layout()
             cv = FigureCanvasTkAgg(fig, master=win)
-            cv.draw()
             cv.get_tk_widget().pack(fill="both", expand=True,
                                     padx=10, pady=(4, 10))
+            state["fig"] = fig
+            state["cv"] = cv
             self._cur_fig = fig
+            redraw()
         except ImportError:
             ttk.Label(win, text="（未安装 matplotlib：下面用文本显示，"
                                 "可用【复制数据】粘进 Excel 画图）",
@@ -3841,6 +4779,32 @@ def _set_taskbar_appid():
         pass
 
 
+def _find_icon():
+    """按优先级定位窗口图标文件，跨设备（只拷 exe）也能找到。
+
+    顺序：打包内嵌资源(_MEIPASS) -> exe 同目录 -> 源码目录。
+    PyInstaller onefile 会把 datas 里的 maxwell_m.ico 解压到 _MEIPASS，
+    它**不等于** exe 所在目录；只认 exe 目录时，换一台机器（exe 旁边
+    没有 ico）就会找不到 -> iconbitmap 不执行 -> 回退成 Tk/Python
+    默认图标（标题栏与任务栏都会变默认图标）。
+    """
+    for d in (_RES, APP_DIR):
+        try:
+            c = os.path.join(d, "maxwell_m.ico")
+        except Exception:
+            continue
+        if d and os.path.isfile(c):
+            return c
+    try:
+        c = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "maxwell_m.ico")
+        if os.path.isfile(c):
+            return c
+    except Exception:
+        pass
+    return ""
+
+
 def main():
     global SCALE
     cfg = load_cfg()
@@ -3857,10 +4821,37 @@ def main():
     SCALE = _enable_hidpi()      # 必须在建 Tk 窗口之前调用
     root = tk.Tk()
     setup_style(root)            # 现代浅色主题（clam 定制）
-    _ico = os.path.join(APP_DIR, "maxwell_m.ico")
-    if os.path.isfile(_ico):
+    # 窗口/任务栏图标：优先用打包内嵌资源，其次 exe 同目录（见 _find_icon）
+    _ico = _find_icon()
+    if _ico:
         try:
-            root.iconbitmap(_ico)   # 窗口/任务栏图标（Maxwell 风格 m）
+            # default= 让后续 Toplevel（损耗柱状图等）继承同一图标
+            root.iconbitmap(default=_ico)
+        except Exception:
+            try:
+                root.iconbitmap(_ico)
+            except Exception:
+                pass
+    else:
+        # 兜底：连 ico 都找不到时，用 PIL 把内嵌 PNG 图标设为窗口图标
+        try:
+            from PIL import Image as _Im, ImageTk as _ImTk
+            _png = _Im.open(_io.BytesIO(base64.b64decode(
+                ICON_B64["cil-eagle"] if "cil-eagle" in ICON_B64
+                else ICON_B64["cil-home"])))
+            _ph = _ImTk.PhotoImage(_png)
+            root.iconphoto(True, _ph)
+            root._icon_ref = _ph        # 防 GC
+        except Exception:
+            pass
+    if os.environ.get("MAXWELLPOST_DEBUG_ICON"):
+        try:
+            with open(os.path.join(APP_DIR, "_icon_debug.txt"), "w",
+                      encoding="ascii", errors="replace") as _f:
+                _f.write("icon=%s\nexists=%s\nfrozen=%s\nres=%s\n"
+                         "app=%s\n" % (_ico, bool(_ico and os.path.isfile(_ico)),
+                                       getattr(sys, "frozen", False), _RES,
+                                       APP_DIR))
         except Exception:
             pass
     App(root, cfg)

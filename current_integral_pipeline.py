@@ -318,6 +318,10 @@ def main():
     ap.add_argument("--no-backup", action="store_true")
     ap.add_argument("--no-png", action="store_true")
     ap.add_argument("--port", type=int, default=50051)
+    ap.add_argument("--setup", default="",
+                    help="总览页所选 setup 名（默认 nominal_adaptive）")
+    ap.add_argument("--var", action="append", default=[],
+                    help="总览页所选求解点，可重复：参数=值（如 Freq=650kHz）")
     args = ap.parse_args()
 
     try:  # 全程实时输出：即使中途卡死，日志也能看到卡在哪一句
@@ -363,8 +367,26 @@ def main():
         print("目标      : %s -> %s" % (", ".join(objects), ", ".join(varnames)))
         print("报表      : %s（Rectangular Plot, X=%s）" % (report, args.sweep))
 
-        setup = str(m3d.nominal_adaptive)
-        print("解上下文  : %s" % setup)
+        setup = "%s : LastAdaptive" % args.setup if args.setup \
+            else str(m3d.nominal_adaptive)
+        if not setup or setup == "None":
+            # gRPC 下 nominal_adaptive 可能失败（GetSetups 不可用），
+            # 兜底从工程文件解析 setup 名
+            try:
+                from aedt_gui_backend import _setups_from_file
+                _ns = _setups_from_file(
+                    os.path.join(m3d.project_path,
+                                 m3d.project_name + ".aedt"),
+                    m3d.design_name)
+                if _ns:
+                    setup = "%s : LastAdaptive" % _ns[0]
+            except Exception:
+                pass
+        if not setup or setup == "None":
+            print("!! 无法确定 setup（gRPC nominal_adaptive 失败且未指定 "
+                  "--setup）——请在总览页选择求解点后重试")
+            return 2
+        print("解上下文  : %s%s" % (setup, "（总览页所选）" if args.setup else ""))
 
         snap_before = snap_results(m3d)
         print("结果目录  : %s" % results_dir(m3d))
@@ -493,6 +515,14 @@ def main():
             _di = {}
         variations = {k: [x] for k, x in _di.items()}
         variations[args.sweep] = ["All"]
+        # 总览页所选求解点（可多条：组合点逐个覆盖）
+        for _pin in (args.var or []):
+            if "=" not in _pin:
+                continue
+            _pn, _pv = _pin.split("=", 1)
+            variations[_pn.strip()] = [_pv.strip()]
+            print("变体覆盖  : %s = %s（总览页所选求解点）"
+                  % (_pn.strip(), _pv.strip()))
         have0 = all_reports(m3d)
         print("已有报表 (%d): %s" % (len(have0), have0))
         try:
